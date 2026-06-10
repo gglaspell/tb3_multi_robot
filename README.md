@@ -1,5 +1,211 @@
+# Modifications
 
-# Multi-TurtleBot3 Simulation with ROS 2 Jazzy & Gazebo Harmonic
+## TB3 Follow Mode — tb3 Follows tb1
+
+This section describes the **follow scenario**: tb1 is driven manually via RViz waypoints while tb3 autonomously trails 0.5 m behind it using Nav2's Follow Dynamic Point behavior tree.
+
+### New Files
+
+| File | Location | Purpose |
+|---|---|---|
+| `tb3_follow_tb1.py` | `multi_robot_scripts/` | Publishes a trailing goal pose to `/tb3/goal_pose` based on tb1's odometry |
+| `follow_tb3.launch.py` | `launch/` | Launches Nav2 for both robots (separate params) + the follow node |
+| `burger_nav2_params_tb3.yaml` | `params/` | tb3-specific Nav2 params: FollowDynamicPoint BT, relaxed goal tolerances, wider costmap |
+
+`setup.py` must have the following entry added to `console_scripts`:
+
+```python
+'tb3_follow_tb1 = multi_robot_scripts.tb3_follow_tb1:main',
+```
+
+***
+
+### Docker Setup
+
+The follow scenario runs entirely inside Docker. Two containers are used:
+
+| Container | Service name | Runs |
+|---|---|---|
+| `tb3_gazebo` | `gazebo` | Gazebo world + robot spawning |
+| `tb3_nav` | `nav` | Nav2 (tb1 + tb3) + follow node + RViz (x2) |
+
+The `docker-compose.yaml` and updated `Dockerfile` / `entrypoint.sh` live in `docker/`.
+
+#### One-Time: Build the Image
+
+Only needed once, or after changes to the `Dockerfile` itself:
+
+```bash
+cd docker
+docker compose build
+```
+
+To force a fresh pull of the latest `follow` branch (e.g. after pushing new commits):
+
+```bash
+docker compose build --no-cache
+```
+
+> **Note:** The image clones from the `follow` branch of this repo at build time:
+> ```dockerfile
+> RUN git clone https://github.com/gglaspell/tb3_multi_robot.git src/tb3_multi_robot -b follow
+> ```
+> Any code changes pushed to `follow` require a rebuild to take effect inside the container.
+
+***
+
+#### Run Once Per Session: Gazebo World
+
+Start Gazebo first and leave it running. This spawns the world and both robots:
+
+```bash
+# From the docker/ directory
+docker compose up gazebo
+```
+
+Wait until you see Gazebo fully loaded before starting Nav2.
+
+***
+
+#### Run Once Per Session: Nav2 + Follow Node
+
+In a second terminal, start Nav2 and the follow node:
+
+```bash
+docker compose up nav
+```
+
+This launches:
+- Nav2 for **tb1** using `burger_nav2_params.yaml` (standard `NavigateToPose`)
+- Nav2 for **tb3** using `burger_nav2_params_tb3.yaml` (FollowDynamicPoint BT)
+- Two RViz windows (one per robot)
+- `tb3_follow_tb1` node publishing the dynamic trailing goal
+
+***
+
+#### Development Workflow: Updating Code
+
+When you change Python scripts or launch files and want to test without a full rebuild:
+
+```bash
+# 1. Push your changes to the follow branch
+git push origin follow
+
+# 2. Rebuild to pull the latest commit
+docker compose build --no-cache
+
+# 3. Restart both services
+docker compose down
+docker compose up gazebo   # terminal 1
+docker compose up nav      # terminal 2
+```
+
+If you only changed parameters (`.yaml` files), a rebuild is still required because params are installed into the image at build time via `colcon build`.
+
+***
+
+#### Useful Docker Commands
+
+```bash
+# Shell into the running nav container (e.g. to run ros2 topic echo)
+docker compose exec nav bash
+
+# Override follow_distance at run time (default 0.5 m)
+docker compose run nav ros2 launch tb3_multi_robot follow_tb3.launch.py follow_distance:=0.8
+
+# Stop all containers
+docker compose down
+
+# View logs from the follow node only
+docker compose logs nav | grep tb3_follow_tb1
+```
+
+***
+
+### Running the Follow Scenario Step by Step
+
+#### Step 1 — Set tb1's Initial Pose
+
+In the **tb1 RViz window**:
+
+1. Click **2D Pose Estimate** in the toolbar
+2. Click and drag on the map to place tb1 at its physical starting position, matching where it was spawned in Gazebo (default: `x=-1.5, y=-0.5`)
+3. Confirm AMCL has localised: the particle cloud should converge around the robot
+
+#### Step 2 — Set tb3's Initial Pose
+
+In the **tb3 RViz window**:
+
+1. Click **2D Pose Estimate**
+2. Place tb3 at its spawned position (default: `x=1.5, y=-0.5`)
+3. Confirm AMCL localisation in the same way
+
+> tb3 does not need a navigation goal sent manually — the `tb3_follow_tb1` node will begin publishing goals to `/tb3/goal_pose` automatically once tb1 starts moving.
+
+#### Step 3 — Verify the Follow Node is Publishing
+
+Before driving tb1, confirm the follow node is active:
+
+```bash
+docker compose exec nav bash
+ros2 topic echo /tb3/goal_pose
+```
+
+The topic will be silent until tb1 moves more than 0.1 m (the deadband threshold). This is expected.
+
+#### Step 4 — Drive tb1 with Waypoints
+
+In the **tb1 RViz window**:
+
+1. Click **Nav2 Goal** (or **Navigation2 → Send Goal**) in the toolbar
+2. Click and drag on the map to set a goal pose for tb1
+3. tb1 will navigate to the goal using standard Nav2
+
+As tb1 moves, `tb3_follow_tb1` computes a trailing pose 0.5 m behind tb1 along its direction of travel and publishes it to `/tb3/goal_pose` at 2 Hz. tb3's Nav2 stack replans continuously to chase this moving goal.
+
+#### Step 5 — Send Additional Waypoints
+
+Repeat Step 4 to send tb1 to new goals. tb3 will continue trailing throughout. There is no need to interact with the tb3 RViz window during normal operation.
+
+***
+
+### Tuning Parameters
+
+All follow behaviour parameters can be overridden as launch arguments:
+
+| Parameter | Default | Effect |
+|---|---|---|
+| `follow_distance` | `0.5` | Metres tb3 trails behind tb1. Increase if tb3 gets too close |
+| `publish_rate` | `2.0` | Hz for goal republishing. Lower reduces replan chatter; higher improves responsiveness |
+| `heading_history_size` | `5` | Poses used to estimate tb1's heading. Increase for smoother heading on slow moves |
+| `deadband_distance` | `0.1` | Minimum goal displacement (m) before republishing. Reduces unnecessary replanning when tb1 is nearly stationary |
+
+Example — increase follow distance and reduce replan rate:
+
+```bash
+docker compose run nav ros2 launch tb3_multi_robot follow_tb3.launch.py \
+  follow_distance:=0.8 \
+  publish_rate:=1.5
+```
+
+***
+
+### Architecture Overview
+
+```
+RViz (tb1 window)
+  └─► /tb1/goal_pose ──► Nav2 (tb1) ──► tb1 moves
+
+tb1 movement
+  └─► /tb1/odom ──► tb3_follow_tb1 node
+                        └─► computes trailing pose (0.5 m behind)
+                        └─► /tb3/goal_pose ──► Nav2 (tb3, FollowDynamicPoint BT)
+                                                   └─► tb3 follows
+```
+
+# Original README
+
+## Multi-TurtleBot3 Simulation with ROS 2 Jazzy & Gazebo Harmonic
 This repository provides a scalable ROS 2-based framework to simulate multiple TurtleBot3 robots in Gazebo with Navigation2 (Nav2) support. Each robot runs within its own namespace, enabling clean separation and interaction-free operation.
 
 The 'master' branch is updated with Jazzy support.  The 'humble' branch includes an implementation that functions with the humble framework, while the 'foxy' branch provides support specifically for ROS2 Foxy.

@@ -1,0 +1,72 @@
+# docker-compose.yaml — tb3 multi-robot follow scenario
+#
+# Services
+# --------
+#   gazebo  : Gazebo server + client — spawns world and both robots
+#   nav     : Nav2 for tb1 (normal) + Nav2 for tb3 (follow mode) + follow node
+#
+# Host prerequisites
+# ------------------
+#   1. X server running and $DISPLAY set (for RViz + Gazebo GUI):
+#        Linux : xhost +local:docker
+#        macOS : XQuartz running, then: xhost + 127.0.0.1
+#   2. Build the image first:
+#        docker compose build
+#
+# Common usage
+# ------------
+#   docker compose up                          # start everything
+#   docker compose up gazebo                   # Gazebo only
+#   docker compose exec nav bash               # shell into running nav container
+#   docker compose run nav ros2 launch tb3_multi_robot follow_tb3.launch.py follow_distance:=0.8
+
+x-common-env: &common-env
+  ROS_DISTRO: jazzy
+  RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+  CYCLONEDDS_URI: file:///etc/cyclonedds.xml
+  TURTLEBOT3_MODEL: burger
+  GZ_SIM_RESOURCE_PATH: /opt/ros2_ws/install/tb3_multi_robot/share/tb3_multi_robot/models
+  DISPLAY: ${DISPLAY:-:0}
+  QT_X11_NO_MITSHM: 1
+
+x-common-volumes: &common-volumes
+  - /tmp/.X11-unix:/tmp/.X11-unix:rw
+  - /dev/dri:/dev/dri                  # GPU accel — safe to remove if unavailable
+
+services:
+
+  # ── Gazebo: world + robot spawning ─────────────────────────────────────────
+  gazebo:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: tb3_multi_robot:latest
+    container_name: tb3_gazebo
+    environment:
+      <<: *common-env
+    volumes: *common-volumes
+    network_mode: host
+    privileged: true
+    command: >
+      ros2 launch tb3_multi_robot tb3_world.launch.py
+    restart: on-failure
+
+  # ── Nav2 (both robots) + tb3_follow_tb1 node ───────────────────────────────
+  nav:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: tb3_multi_robot:latest
+    container_name: tb3_nav
+    environment:
+      <<: *common-env
+    volumes: *common-volumes
+    network_mode: host
+    privileged: true
+    depends_on:
+      - gazebo
+    command: >
+      ros2 launch tb3_multi_robot follow_tb3.launch.py
+      follow_distance:=0.5
+      publish_rate:=2.0
+    restart: on-failure
