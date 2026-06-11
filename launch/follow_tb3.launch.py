@@ -28,7 +28,7 @@ ros2 launch tb3_multi_robot follow_tb3.launch.py
 
 Optional overrides
 ------------------
-map:=       – path to map.yaml (default: package map/map.yaml)
+map:=            – path to map.yaml (default: package map/map.yaml)
 use_sim_time:=true/false – (default true)
 follow_distance:=0.5 – metres tb3 trails behind tb1 (default 0.5)
 publish_rate:=2.0    – Hz goal is republished (default 2.0)
@@ -67,7 +67,6 @@ def _nav2_bringup(robot_name: str, params_path: str, map_path,
             'params_file':   params_path,
             'use_namespace': 'true',
             'namespace':     robot_name,
-            'autostart':     'true',   # FIXED: ensures lifecycle manager activates all nodes
         }.items(),
     )
 
@@ -77,10 +76,10 @@ def generate_launch_description():
     pkg_dir = get_package_share_directory('tb3_multi_robot')
     tb3_model = os.environ.get('TURTLEBOT3_MODEL', 'burger')
 
-    default_map  = os.path.join(pkg_dir, 'map',    'map.yaml')
-    params_tb1   = os.path.join(pkg_dir, 'params', f'{tb3_model}_nav2_params.yaml')
-    params_tb3   = os.path.join(pkg_dir, 'params', f'{tb3_model}_nav2_params_tb3.yaml')
-    rviz_template = os.path.join(pkg_dir, 'rviz',  'tb3_navigation2.rviz')
+    default_map   = os.path.join(pkg_dir, 'map',    'map.yaml')
+    params_tb1    = os.path.join(pkg_dir, 'params', f'{tb3_model}_nav2_params.yaml')
+    params_tb3    = os.path.join(pkg_dir, 'params', f'{tb3_model}_nav2_params_tb3.yaml')
+    rviz_template = os.path.join(pkg_dir, 'rviz',   'tb3_navigation2.rviz')
 
     # ── Launch arguments ──────────────────────────────────────────────────────
     ld = LaunchDescription()
@@ -159,11 +158,11 @@ def generate_launch_description():
         name='tb3_follow_tb1',
         output='screen',
         parameters=[{
-            'use_sim_time':        use_sim_time,
-            'follow_distance':     LaunchConfiguration('follow_distance'),
-            'publish_rate':        LaunchConfiguration('publish_rate'),
+            'use_sim_time':         use_sim_time,
+            'follow_distance':      LaunchConfiguration('follow_distance'),
+            'publish_rate':         LaunchConfiguration('publish_rate'),
             'heading_history_size': LaunchConfiguration('heading_history_size'),
-            'deadband_distance':   LaunchConfiguration('deadband_distance'),
+            'deadband_distance':    LaunchConfiguration('deadband_distance'),
         }],
     )
     ld.add_action(follow_node)
