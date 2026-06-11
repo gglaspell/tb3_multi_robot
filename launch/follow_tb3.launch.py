@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-#
+
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
+
+# http://www.apache.org/licenses/LICENSE-2.0
+
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,25 +17,24 @@ follow_tb3.launch.py
 
 Launches the full tb1-leader / tb3-follower scenario:
 
-  1. Nav2 for tb1  → burger_nav2_params.yaml       (normal NavigateToPose)
-  2. Nav2 for tb3  → burger_nav2_params_tb3.yaml    (FollowDynamicPoint BT)
-  3. tb3_follow_tb1 node                            (publishes trailing goal)
-  4. Two RViz instances (one per robot)
+1. Nav2 for tb1 → burger_nav2_params.yaml (normal NavigateToPose)
+2. Nav2 for tb3 → burger_nav2_params_tb3.yaml (FollowDynamicPoint BT)
+3. tb3_follow_tb1 node (publishes trailing goal)
+4. Two RViz instances (one per robot)
 
 Usage
 -----
-  ros2 launch tb3_multi_robot follow_tb3.launch.py
+ros2 launch tb3_multi_robot follow_tb3.launch.py
 
 Optional overrides
 ------------------
-  map:=<path>              – path to map.yaml (default: package map/map.yaml)
-  use_sim_time:=true/false – (default true)
-  follow_distance:=0.5     – metres tb3 trails behind tb1 (default 0.5)
-  publish_rate:=2.0        – Hz goal is republished (default 2.0)
+map:=       – path to map.yaml (default: package map/map.yaml)
+use_sim_time:=true/false – (default true)
+follow_distance:=0.5 – metres tb3 trails behind tb1 (default 0.5)
+publish_rate:=2.0    – Hz goal is republished (default 2.0)
 """
 
 import os
-import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -51,7 +50,8 @@ from launch_ros.actions import Node
 from multi_robot_scripts.utils import generate_rviz_config
 
 
-def _nav2_bringup(robot_name: str, params_path: str, map_path, use_sim_time) -> IncludeLaunchDescription:
+def _nav2_bringup(robot_name: str, params_path: str, map_path,
+                  use_sim_time) -> IncludeLaunchDescription:
     """Return a namespaced Nav2 bringup action for a single robot."""
     return IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -62,24 +62,25 @@ def _nav2_bringup(robot_name: str, params_path: str, map_path, use_sim_time) -> 
             )
         ),
         launch_arguments={
-            'map':          map_path,
-            'use_sim_time': use_sim_time,
-            'params_file':  params_path,
+            'map':           map_path,
+            'use_sim_time':  use_sim_time,
+            'params_file':   params_path,
             'use_namespace': 'true',
             'namespace':     robot_name,
+            'autostart':     'true',   # FIXED: ensures lifecycle manager activates all nodes
         }.items(),
     )
 
 
 def generate_launch_description():
     # ── Paths ─────────────────────────────────────────────────────────────────
-    pkg_dir  = get_package_share_directory('tb3_multi_robot')
+    pkg_dir = get_package_share_directory('tb3_multi_robot')
     tb3_model = os.environ.get('TURTLEBOT3_MODEL', 'burger')
 
-    default_map    = os.path.join(pkg_dir, 'map',    'map.yaml')
-    params_tb1     = os.path.join(pkg_dir, 'params', f'{tb3_model}_nav2_params.yaml')
-    params_tb3     = os.path.join(pkg_dir, 'params', f'{tb3_model}_nav2_params_tb3.yaml')
-    rviz_template  = os.path.join(pkg_dir, 'rviz',   'tb3_navigation2.rviz')
+    default_map  = os.path.join(pkg_dir, 'map',    'map.yaml')
+    params_tb1   = os.path.join(pkg_dir, 'params', f'{tb3_model}_nav2_params.yaml')
+    params_tb3   = os.path.join(pkg_dir, 'params', f'{tb3_model}_nav2_params_tb3.yaml')
+    rviz_template = os.path.join(pkg_dir, 'rviz',  'tb3_navigation2.rviz')
 
     # ── Launch arguments ──────────────────────────────────────────────────────
     ld = LaunchDescription()
@@ -158,11 +159,11 @@ def generate_launch_description():
         name='tb3_follow_tb1',
         output='screen',
         parameters=[{
-            'use_sim_time':         use_sim_time,
-            'follow_distance':      LaunchConfiguration('follow_distance'),
-            'publish_rate':         LaunchConfiguration('publish_rate'),
+            'use_sim_time':        use_sim_time,
+            'follow_distance':     LaunchConfiguration('follow_distance'),
+            'publish_rate':        LaunchConfiguration('publish_rate'),
             'heading_history_size': LaunchConfiguration('heading_history_size'),
-            'deadband_distance':    LaunchConfiguration('deadband_distance'),
+            'deadband_distance':   LaunchConfiguration('deadband_distance'),
         }],
     )
     ld.add_action(follow_node)

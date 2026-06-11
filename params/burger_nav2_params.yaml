@@ -36,8 +36,8 @@ amcl:
     z_max: 0.05
     z_rand: 0.5
     z_short: 0.05
-    scan_topic: <robot_namespace>/scan
-    map_topic: /map
+    scan_topic: scan        # FIXED: relative (was /scan)
+    map_topic: map          # FIXED: relative (was /map)
     set_initial_pose: false
     always_reset_initial_pose: false
     first_map_only: false
@@ -53,7 +53,7 @@ bt_navigator:
     robot_base_frame: base_link
     transform_tolerance: 0.5
     filter_duration: 0.3
-    default_nav_to_pose_bt_xml: "$(find-pkg-share nav2_bt_navigator)/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml" # behavior trees location.
+    default_nav_to_pose_bt_xml: "$(find-pkg-share nav2_bt_navigator)/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml"
     default_nav_through_poses_bt_xml: "$(find-pkg-share nav2_bt_navigator)/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml"
     always_reload_bt_xml: false
     goal_blackboard_id: goal
@@ -128,8 +128,6 @@ controller_server:
       min_speed_xy: 0.0
       max_speed_xy: 0.3
       min_speed_theta: 0.0
-      # Add high threshold velocity for turtlebot 3 issue.
-      # https://github.com/ROBOTIS-GIT/turtlebot3_simulations/issues/75
       acc_lim_x: 3.0
       acc_lim_y: 0.0
       acc_lim_theta: 3.2
@@ -158,7 +156,7 @@ controller_server:
       RotateToGoal.scale: 32.0
       RotateToGoal.slowing_factor: 5.0
       RotateToGoal.lookahead_time: -1.0
-    enable_stamped_cmd_vel: true
+      enable_stamped_cmd_vel: true
 
 local_costmap:
   local_costmap:
@@ -182,7 +180,7 @@ local_costmap:
         enabled: true
         observation_sources: scan
         scan:
-          topic: <robot_namespace>/scan
+          topic: scan         # FIXED: relative (was /scan)
           max_obstacle_height: 2.0
           clearing: true
           marking: true
@@ -198,7 +196,7 @@ local_costmap:
         mark_threshold: 0
         observation_sources: scan
         scan:
-          topic: <robot_namespace>/scan
+          topic: scan         # FIXED: relative (was /scan)
           max_obstacle_height: 2.0
           clearing: true
           marking: true
@@ -209,7 +207,7 @@ local_costmap:
           obstacle_min_range: 0.0
       static_layer:
         map_subscribe_transient_local: true
-      always_send_full_costmap: true
+        always_send_full_costmap: true
 
 global_costmap:
   global_costmap:
@@ -228,7 +226,7 @@ global_costmap:
         enabled: true
         observation_sources: scan
         scan:
-          topic: <robot_namespace>/scan
+          topic: scan         # FIXED: relative (was /scan)
           max_obstacle_height: 2.0
           clearing: true
           marking: true
@@ -248,7 +246,7 @@ global_costmap:
         mark_threshold: 0
         observation_sources: scan
         scan:
-          topic: <robot_namespace>/scan
+          topic: scan         # FIXED: relative (was /scan)
           max_obstacle_height: 2.0
           clearing: true
           marking: true
@@ -261,7 +259,7 @@ global_costmap:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: true
         transform_tolerance: 0.1
-        map_topic: /map
+        map_topic: map        # FIXED: relative (was /map)
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         inflation_radius: 0.5
@@ -271,7 +269,7 @@ global_costmap:
 map_server:
   ros__parameters:
     yaml_filename: "map.yaml"
-    topic_name: /map
+    topic_name: map           # FIXED: relative (was /map)
 
 map_saver:
   ros__parameters:
@@ -292,22 +290,22 @@ planner_server:
 
 behavior_server:
   ros__parameters:
-    local_costmap_topic: <robot_namespace>/local_costmap/costmap_raw
-    local_footprint_topic: <robot_namespace>/local_costmap/published_footprint
-    global_costmap_topic: <robot_namespace>/global_costmap/costmap_raw
-    global_footprint_topic: <robot_namespace>/global_costmap/published_footprint
+    local_costmap_topic: local_costmap/costmap_raw      # FIXED: relative
+    local_footprint_topic: local_costmap/published_footprint  # FIXED: relative
+    global_costmap_topic: global_costmap/costmap_raw    # FIXED: relative
+    global_footprint_topic: global_costmap/published_footprint  # FIXED: relative
     cycle_frequency: 10.0
     behavior_plugins: ["spin", "backup", "drive_on_heading", "wait", "assisted_teleop"]
     spin:
-      plugin: "nav2_behaviors::Spin" # In Iron and older versions, "/" was used instead of "::"
+      plugin: "nav2_behaviors::Spin"
     backup:
-      plugin: "nav2_behaviors::BackUp" # In Iron and older versions, "/" was used instead of "::"
+      plugin: "nav2_behaviors::BackUp"
     drive_on_heading:
-      plugin: "nav2_behaviors::DriveOnHeading" # In Iron and older versions, "/" was used instead of "::"
+      plugin: "nav2_behaviors::DriveOnHeading"
     wait:
-      plugin: "nav2_behaviors::Wait" # In Iron and older versions, "/" was used instead of "::"
+      plugin: "nav2_behaviors::Wait"
     assisted_teleop:
-      plugin: "nav2_behaviors::AssistedTeleop" # In Iron and older versions, "/" was used instead of "::"
+      plugin: "nav2_behaviors::AssistedTeleop"
     local_frame: odom
     global_frame: map
     robot_base_frame: base_link
@@ -332,9 +330,9 @@ collision_monitor:
   ros__parameters:
     base_frame_id: "base_footprint"
     odom_frame_id: "odom"
-    cmd_vel_in_topic: "<robot_namespace>/cmd_vel_smoothed"
-    cmd_vel_out_topic: "<robot_namespace>/cmd_vel"
-    state_topic: "<robot_namespace>/collision_monitor_state"
+    cmd_vel_in_topic: "cmd_vel_smoothed"    # FIXED: relative
+    cmd_vel_out_topic: "cmd_vel"            # FIXED: relative
+    state_topic: "collision_monitor_state"  # FIXED: relative
     transform_tolerance: 0.5
     source_timeout: 5.0
     base_shift_correction: true
@@ -348,7 +346,7 @@ collision_monitor:
       action_type: "stop"
       min_points: 4
       visualize: true
-      polygon_pub_topic: "<robot_namespace>/polygon_stop"
+      polygon_pub_topic: "polygon_stop"     # FIXED: relative
       enabled: true
     PolygonSlow:
       type: "polygon"
@@ -357,7 +355,7 @@ collision_monitor:
       min_points: 4
       slowdown_ratio: 0.3
       visualize: true
-      polygon_pub_topic: "<robot_namespace>/polygon_slowdown"
+      polygon_pub_topic: "polygon_slowdown" # FIXED: relative
       enabled: true
     PolygonLimit:
       type: "polygon"
@@ -367,12 +365,12 @@ collision_monitor:
       linear_limit: 0.4
       angular_limit: 0.5
       visualize: true
-      polygon_pub_topic: "<robot_namespace>/polygon_limit"
+      polygon_pub_topic: "polygon_limit"    # FIXED: relative
       enabled: true
     FootprintApproach:
       type: "polygon"
       action_type: "approach"
-      footprint_topic: "<robot_namespace>/local_costmap/published_footprint"
+      footprint_topic: "local_costmap/published_footprint"  # FIXED: relative
       time_before_collision: 2.0
       simulation_time_step: 0.02
       min_points: 6
@@ -384,7 +382,7 @@ collision_monitor:
       min_points: 6
       visualize: true
       enabled: False
-      polygon_pub_topic: "<robot_namespace>/velocity_polygon_stop"
+      polygon_pub_topic: "velocity_polygon_stop"  # FIXED: relative
       velocity_polygons: ["rotation", "translation_forward", "translation_backward", "stopped"]
       holonomic: false
       rotation:
@@ -415,7 +413,7 @@ collision_monitor:
     scan:
       source_timeout: 0.2
       type: "scan"
-      topic: "<robot_namespace>/scan"
+      topic: scan             # FIXED: relative (was /scan)
       enabled: true
 
 velocity_smoother:
@@ -429,7 +427,15 @@ velocity_smoother:
     velocity_timeout: 1.0
     max_accel: [2.5, 0.0, 3.2]
     max_decel: [-2.5, 0.0, -3.2]
-    odom_topic: "<robot_namespace>/odom"
+    odom_topic: odom          # FIXED: relative (was /odom)
     odom_duration: 0.1
     use_realtime_priority: false
     enable_stamped_cmd_vel: true
+
+lifecycle_manager_localization:
+  ros__parameters:
+    autostart: true           # ADDED
+
+lifecycle_manager_navigation:
+  ros__parameters:
+    autostart: true           # ADDED
