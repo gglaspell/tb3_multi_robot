@@ -31,6 +31,7 @@ from launch_ros.actions import Node
 
 from multi_robot_scripts.utils import load_sdf_with_namespace, create_namespaced_bridge_yaml
 
+
 def generate_launch_description():
     # Paths
     tb3_multi_dir = get_package_share_directory('tb3_multi_robot')
@@ -64,7 +65,7 @@ def generate_launch_description():
     tb3_model = os.environ.get('TURTLEBOT3_MODEL', 'burger')
     model_dir = f'turtlebot3_{tb3_model}'
     remappings = [("/tf", "tf"), ("/tf_static", "tf_static")]
-    frame_prefix = LaunchConfiguration('frame_prefix', default='')
+    # frame_prefix = LaunchConfiguration('frame_prefix', default='')
     urdf_file_name = 'turtlebot3_' + tb3_model + '.urdf'
     urdf_path = os.path.join(
         tb3_multi_dir,
@@ -154,7 +155,7 @@ def generate_launch_description():
         name='clock_bridge',
         output='screen',
         arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'],
-        )
+    )
     ld.add_action(clock_bridge)
 
     # Add GZ model path to env
