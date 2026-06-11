@@ -65,7 +65,7 @@ def generate_launch_description():
     tb3_model = os.environ.get('TURTLEBOT3_MODEL', 'burger')
     model_dir = f'turtlebot3_{tb3_model}'
     remappings = [("/tf", "tf"), ("/tf_static", "tf_static")]
-    # frame_prefix = LaunchConfiguration('frame_prefix', default='')
+    frame_prefix = LaunchConfiguration('frame_prefix', default='')
     urdf_file_name = 'turtlebot3_' + tb3_model + '.urdf'
     urdf_path = os.path.join(
         tb3_multi_dir,
