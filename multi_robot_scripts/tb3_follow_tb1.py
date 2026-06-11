@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#
+
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -15,27 +15,24 @@
 """
 tb3_follow_tb1.py
 
-Subscribes to tb1's odometry and continuously publishes a trailing goal
-pose to tb3's /goal_pose topic.
+Subscribes to tb1's AMCL pose (map-frame, drift-corrected) and sends
+NavigateToPose action goals to tb3's Nav2 stack so tb3 trails behind tb1.
 
-The goal is computed as a point `follow_distance` metres behind tb1
-along the direction tb1 has been travelling, estimated from a short
-pose history. tb3's Nav2 stack (using the follow_dynamic_point BT)
-replans to this goal as it moves.
+Fixes vs. original:
+  1. Subscribes to /tb1/amcl_pose (PoseWithCovarianceStamped, map frame)
+     instead of /tb1/odom (odom frame — drifts relative to map).
+  2. Uses a NavigateToPose action client to /tb3/navigate_to_pose
+     instead of publishing to /tb3/goal_pose (unreliable topic path,
+     no feedback, ignored when bt_navigator is inactive).
+  3. Goals are computed and sent entirely in the map frame.
 
 Parameters
 ----------
-follow_distance       : float  (default 0.5)  – metres to trail behind tb1
-publish_rate          : float  (default 2.0)  – Hz, how often to push a new goal
-heading_history_size  : int    (default 5)    – number of past poses used to
-                                                estimate tb1's travel direction
-deadband_distance     : float  (default 0.1)  – metres; skip publish if the new
-                                                goal hasn't moved this far from
-                                                the last published goal
-stationary_threshold  : float  (default 0.05) – metres; if tb1 moves less than
-                                                this between oldest and newest
-                                                history pose, treat it as stopped
-                                                and hold the last valid goal
+follow_distance      : float (default 0.5)  – metres to trail behind tb1
+publish_rate         : float (default 2.0)  – Hz, how often to send a new goal
+heading_history_size : int   (default 5)    – past poses used to estimate direction
+deadband_distance    : float (default 0.1)  – skip if goal moved less than this (m)
+stationary_threshold : float (default 0.05) – treat tb1 as stopped below this (m)
 """
 
 import math
@@ -43,9 +40,12 @@ from collections import deque
 
 import rclpy
 from rclpy.node import Node
-from nav_msgs.msg import Odometry
-from geometry_msgs.msg import PoseStamped
-from tf_transformations import euler_from_quaternion, quaternion_from_euler
+from rclpy.action import ActionClient
+from rclpy.duration import Duration
+
+from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped
+from nav2_msgs.action import NavigateToPose
+from tf_transformations import quaternion_from_euler
 
 
 class Tb3FollowTb1(Node):
@@ -53,7 +53,7 @@ class Tb3FollowTb1(Node):
     def __init__(self):
         super().__init__('tb3_follow_tb1')
 
-        # ── Parameters ────────────────────────────────────────────────────────
+        # ── Parameters ────────────────────────────────────────────────
         self.declare_parameter('follow_distance',      0.5)
         self.declare_parameter('publish_rate',         2.0)
         self.declare_parameter('heading_history_size', 5)
@@ -66,23 +66,30 @@ class Tb3FollowTb1(Node):
         self.deadband_distance    = self.get_parameter('deadband_distance').value
         self.stationary_threshold = self.get_parameter('stationary_threshold').value
 
-        # ── State ─────────────────────────────────────────────────────────────
-        # Ring buffer of (x, y) tuples — most recent appended to the right
+        # ── State ─────────────────────────────────────────────────────
+        # Ring buffer of (x, y) tuples in the map frame
         self._pose_history: deque = deque(maxlen=history_size)
-        self._last_goal: tuple | None = None   # (x, y) of the last published goal
+        self._last_goal: tuple | None = None   # (x, y) of last sent goal
+        self._last_heading: float = 0.0
+        self._goal_handle = None               # active action goal handle
+        self._goal_in_flight: bool = False
 
-        # ── ROS interfaces ────────────────────────────────────────────────────
-        self._odom_sub = self.create_subscription(
-            Odometry,
-            '/tb1/odom',
-            self._odom_callback,
+        # ── Subscriber: tb1 AMCL pose (map frame, drift-corrected) ────
+        # FIX 1: was /tb1/odom (odom frame) — now /tb1/amcl_pose (map frame)
+        self._amcl_sub = self.create_subscription(
+            PoseWithCovarianceStamped,
+            '/tb1/amcl_pose',
+            self._amcl_callback,
             10
         )
 
-        self._goal_pub = self.create_publisher(
-            PoseStamped,
-            '/tb3/goal_pose',
-            10
+        # ── Action client: tb3 NavigateToPose ─────────────────────────
+        # FIX 2: was a topic publisher to /tb3/goal_pose — now an action
+        # client to /tb3/navigate_to_pose for reliable goal delivery.
+        self._nav_client = ActionClient(
+            self,
+            NavigateToPose,
+            '/tb3/navigate_to_pose'
         )
 
         period = 1.0 / self.publish_rate
@@ -95,40 +102,38 @@ class Tb3FollowTb1(Node):
             f'history_size={history_size}'
         )
 
-    # ── Odometry callback ─────────────────────────────────────────────────────
+    # ── AMCL callback (map-frame pose) ────────────────────────────────
 
-    def _odom_callback(self, msg: Odometry) -> None:
+    def _amcl_callback(self, msg: PoseWithCovarianceStamped) -> None:
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         self._pose_history.append((x, y))
 
-    # ── Timer callback ────────────────────────────────────────────────────────
+    # ── Timer callback ────────────────────────────────────────────────
 
     def _publish_goal(self) -> None:
         if len(self._pose_history) < 2:
-            # Not enough data yet
             return
 
-        p_now  = self._pose_history[-1]   # most recent tb1 pose
-        p_past = self._pose_history[0]    # oldest pose in the history window
+        p_now  = self._pose_history[-1]   # most recent tb1 map pose
+        p_past = self._pose_history[0]    # oldest pose in the window
 
         dx = p_now[0] - p_past[0]
         dy = p_now[1] - p_past[1]
         dist_moved = math.hypot(dx, dy)
 
         if dist_moved < self.stationary_threshold:
-            # tb1 is effectively stationary — hold the last valid goal
+            # tb1 stationary — re-send the last valid goal to keep Nav2 alive
             if self._last_goal is None:
                 return
             gx, gy = self._last_goal
-            # Still publish at the held goal so Nav2 doesn't time out
-            self._send_goal(gx, gy, self._last_heading if hasattr(self, '_last_heading') else 0.0)
+            self._send_goal(gx, gy, self._last_heading)
             return
 
-        # Travel direction: the heading tb1 is moving along
+        # Heading tb1 is travelling along
         heading = math.atan2(dy, dx)
 
-        # Trailing goal: step back along tb1's direction of travel
+        # Trailing point: follow_distance metres behind tb1
         gx = p_now[0] - self.follow_distance * math.cos(heading)
         gy = p_now[1] - self.follow_distance * math.sin(heading)
 
@@ -142,27 +147,60 @@ class Tb3FollowTb1(Node):
         self._last_heading = heading
         self._send_goal(gx, gy, heading)
 
-    # ── Publisher helper ──────────────────────────────────────────────────────
+    # ── Action goal sender ────────────────────────────────────────────
 
     def _send_goal(self, x: float, y: float, yaw: float) -> None:
-        msg = PoseStamped()
-        msg.header.stamp    = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'map'
+        # Wait briefly for the action server to become available
+        if not self._nav_client.wait_for_server(timeout_sec=0.1):
+            self.get_logger().warn(
+                '/tb3/navigate_to_pose action server not available — skipping',
+                throttle_duration_sec=5.0
+            )
+            return
 
-        msg.pose.position.x = x
-        msg.pose.position.y = y
-        msg.pose.position.z = 0.0
+        # Cancel the previous in-flight goal before sending a new one
+        if self._goal_in_flight and self._goal_handle is not None:
+            self._goal_handle.cancel_goal_async()
+            self._goal_in_flight = False
+
+        # Build the goal pose (FIX 3: computed in map frame from amcl_pose)
+        pose = PoseStamped()
+        pose.header.stamp    = self.get_clock().now().to_msg()
+        pose.header.frame_id = 'map'
+        pose.pose.position.x = x
+        pose.pose.position.y = y
+        pose.pose.position.z = 0.0
 
         q = quaternion_from_euler(0.0, 0.0, yaw)
-        msg.pose.orientation.x = q[0]
-        msg.pose.orientation.y = q[1]
-        msg.pose.orientation.z = q[2]
-        msg.pose.orientation.w = q[3]
+        pose.pose.orientation.x = q[0]
+        pose.pose.orientation.y = q[1]
+        pose.pose.orientation.z = q[2]
+        pose.pose.orientation.w = q[3]
 
-        self._goal_pub.publish(msg)
+        goal_msg = NavigateToPose.Goal()
+        goal_msg.pose = pose
+
+        send_future = self._nav_client.send_goal_async(goal_msg)
+        send_future.add_done_callback(self._goal_response_callback)
+
         self.get_logger().debug(
-            f'Goal → x={x:.3f}  y={y:.3f}  yaw={math.degrees(yaw):.1f}°'
+            f'Goal → x={x:.3f} y={y:.3f} yaw={math.degrees(yaw):.1f}°'
         )
+
+    def _goal_response_callback(self, future) -> None:
+        self._goal_handle = future.result()
+        if not self._goal_handle.accepted:
+            self.get_logger().warn('Goal rejected by /tb3/navigate_to_pose')
+            self._goal_in_flight = False
+            return
+        self._goal_in_flight = True
+        self._goal_handle.get_result_async().add_done_callback(
+            self._goal_result_callback
+        )
+
+    def _goal_result_callback(self, future) -> None:
+        self._goal_in_flight = False
+        self.get_logger().debug('Goal completed')
 
 
 def main(args=None):
