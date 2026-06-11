@@ -38,8 +38,8 @@ services:
   # ── Gazebo: world + robot spawning ─────────────────────────────────────────
   gazebo:
     build:
-      context: ..
-      dockerfile: docker/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     image: tb3_multi_robot:latest
     container_name: tb3_gazebo
     environment:
@@ -54,8 +54,8 @@ services:
   # ── Nav2 (both robots) + tb3_follow_tb1 node ───────────────────────────────
   nav:
     build:
-      context: ..
-      dockerfile: docker/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     image: tb3_multi_robot:latest
     container_name: tb3_nav
     environment:

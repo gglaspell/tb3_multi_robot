@@ -7,8 +7,7 @@ package_name = 'tb3_multi_robot'
 setup(
     name=package_name,
     version='1.0.0',
-    packages=find_packages(where='.', include=['multi_robot_scripts', 'multi_robot_scripts.*']),
-    package_dir={'': '.'},
+    packages=find_packages(),
     data_files=[
         (f'share/{package_name}', ['package.xml']),
         (f'share/ament_index/resource_index/packages', [f'resource/{package_name}']),
@@ -19,7 +18,8 @@ setup(
         (os.path.join('share', package_name, 'worlds'), glob('worlds/*.world')),
         (os.path.join('share', package_name, 'models/turtlebot3_burger'), glob('models/turtlebot3_burger/*')),
         (os.path.join('share', package_name, 'models/turtlebot3_waffle'), glob('models/turtlebot3_waffle/*')),
-        (os.path.join('share', package_name, 'models/turtlebot3_waffle_pi'), glob('models/turtlebot3_waffle_pi/*')),
+        (os.path.join('share', package_name, 'models/turtlebot3_waffle_pi'),
+         glob('models/turtlebot3_waffle_pi/*')),
         (os.path.join('share', package_name, 'config'), glob('config/*')),
         (os.path.join('share', package_name, 'urdf'), glob('urdf/*')),
         (os.path.join('share', package_name, 'map'), glob('map/*')),

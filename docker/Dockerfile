@@ -25,7 +25,7 @@ RUN apt-get update && apt-get install -y \
     ros-jazzy-nav2-bt-navigator \
     ros-jazzy-behaviortree-cpp \
     python3-transforms3d \
-    && rm -rf /var/lib/apt/lists/*
+    mesa-vulkan-drivers
 
 # ── CycloneDDS config ─────────────────────────────────────────────────────────
 RUN printf '<CycloneDDS>\n\
