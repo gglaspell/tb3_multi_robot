@@ -50,6 +50,14 @@ The Docker healthcheck is backed by a persistent odometry-freshness monitor.
 It detects stale robot simulation continuously without repeatedly starting ROS
 CLI processes and new DDS participants.
 
+Both RViz views retain all configured displays while rendering at 10 FPS. On
+hosts without a container-accessible GPU, Mesa is limited to two render threads
+per RViz process. Override that limit when more rendering capacity is useful:
+
+```bash
+TB3_RVIZ_RENDER_THREADS=4 docker compose -f docker/docker-compose.yaml up
+```
+
 Useful commands:
 
 ```bash

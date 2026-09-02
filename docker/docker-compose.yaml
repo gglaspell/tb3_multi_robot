@@ -75,6 +75,10 @@ services:
     container_name: tb3_nav
     environment:
       <<: *common-env
+      # Bound Mesa's software renderer when no host GPU device is available.
+      # This applies independently to both RViz processes and preserves every
+      # configured display.
+      LP_NUM_THREADS: ${TB3_RVIZ_RENDER_THREADS:-2}
     volumes: *common-volumes
     network_mode: host
     depends_on:
