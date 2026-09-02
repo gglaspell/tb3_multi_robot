@@ -121,7 +121,7 @@ controller_server:
     goal_checker:
       stateful: false                  # CHANGED: reset checker on each new dynamic goal
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.35          # CHANGED: was 0.25 — trail tb1, don't try to arrive on it
+      xy_goal_tolerance: 0.20          # Accurate trailing without the fragile original 0.05 m tolerance
       yaw_goal_tolerance: 0.5          # CHANGED: was 0.25 — heading irrelevant for following
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
@@ -147,7 +147,7 @@ controller_server:
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
-      xy_goal_tolerance: 0.35          # CHANGED: was 0.05 — was dangerously tight for following
+      xy_goal_tolerance: 0.20          # Accurate trailing without the fragile original 0.05 m tolerance
       trans_stopped_velocity: 0.25
       short_circuit_trajectory_evaluation: true
       stateful: true
@@ -213,7 +213,9 @@ local_costmap:
           obstacle_min_range: 0.0
       static_layer:
         map_subscribe_transient_local: true
-      always_send_full_costmap: true
+      # Preserve the full costmap topic while sending compact incremental
+      # updates after its initial snapshot.
+      always_send_full_costmap: false
 
 global_costmap:
   global_costmap:
@@ -270,7 +272,9 @@ global_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         inflation_radius: 0.5
         cost_scaling_factor: 5.0
-      always_send_full_costmap: true
+      # Preserve the full costmap topic while sending compact incremental
+      # updates after its initial snapshot.
+      always_send_full_costmap: false
 
 map_server:
   ros__parameters:

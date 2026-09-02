@@ -43,6 +43,7 @@ def generate_launch_description():
     # Simulation config
     use_sim_time = LaunchConfiguration('use_sim_time')
     gui = LaunchConfiguration('gui')
+    clock_rate = LaunchConfiguration('clock_rate')
     world_path = os.path.join(tb3_multi_dir, 'worlds', 'tb3_world.world')
 
     # Launch Gazebo server and client
@@ -76,6 +77,14 @@ def generate_launch_description():
         'gui',
         default_value='true',
         description='Start the Gazebo graphical client',
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'clock_rate',
+        default_value='250.0',
+        description=(
+            'Maximum ROS /clock publication rate in Hz. Gazebo physics and '
+            'the /clock_raw stream remain at their native 1 kHz rate.'
+        ),
     ))
 
     # Set model search paths before Gazebo starts. The local package contains
@@ -178,6 +187,24 @@ def generate_launch_description():
         if image_bridge:
             ld.add_action(image_bridge)
 
+    # A persistent monitor keeps Docker readiness accurate without repeatedly
+    # constructing short-lived ROS CLI nodes (and DDS discovery participants).
+    ld.add_action(Node(
+        package='tb3_multi_robot',
+        executable='simulation_health_monitor',
+        name='simulation_health_monitor',
+        output='screen',
+        respawn=True,
+        respawn_delay=1.0,
+        parameters=[{
+            'use_sim_time': False,
+            'robot_names': [robot['name'] for robot in robots],
+            'odom_timeout': 2.0,
+            'heartbeat_period': 0.5,
+            'ready_file': '/tmp/tb3_multi_robot.ready',
+        }],
+    ))
+
     # In a multi-robot setup using Gazebo Sim (Harmonic or later), each robot typically
     # requires a separate ROS-Gazebo bridge to relay topics such as sensor data, odometry,
     # and control commands between Gazebo and ROS 2.
@@ -190,14 +217,31 @@ def generate_launch_description():
     # This ensures consistent simulation time across the entire ROS 2 system while supporting
     # multiple robot instances with their own bridges.
 
-    # Global clock bridge
+    # Preserve the native 1 kHz Gazebo clock for high-resolution diagnostics,
+    # then fan out exact clock samples at a configurable rate appropriate for
+    # Nav2's 10-20 Hz control loops. This avoids delivering every physics tick
+    # to every use_sim_time node without changing physics integration accuracy.
     clock_bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
         name='clock_bridge',
         output='screen',
         arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'],
+        remappings=[('/clock', '/clock_raw')],
     )
     ld.add_action(clock_bridge)
+
+    clock_throttle = Node(
+        package='topic_tools',
+        executable='throttle',
+        name='clock_throttle',
+        output='screen',
+        arguments=['messages', '/clock_raw', clock_rate, '/clock'],
+        parameters=[{
+            'use_sim_time': False,
+            'use_wall_clock': True,
+        }],
+    )
+    ld.add_action(clock_throttle)
 
     return ld

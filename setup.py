@@ -35,6 +35,10 @@ setup(
         'console_scripts': [
             'turtlebot3_drive = multi_robot_scripts.turtlebot3_drive:main',
             'tb3_follow_tb1 = multi_robot_scripts.tb3_follow_tb1:main',
+            (
+                'simulation_health_monitor = '
+                'multi_robot_scripts.simulation_health_monitor:main'
+            ),
         ],
     },
 )

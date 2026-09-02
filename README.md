@@ -36,6 +36,20 @@ another ROS graph on the host. Override that domain when needed:
 TB3_ROS_DOMAIN_ID=73 docker compose -f docker/docker-compose.yaml up
 ```
 
+Gazebo retains its 1 kHz / 1 ms physics integration for contact and motion
+accuracy. The native clock is available as `/clock_raw`; `/clock` caps
+exact-sample forwarding at 250 Hz by default, preventing every Nav2 node from
+processing every physics tick. Override the fan-out rate without changing the
+physics rate:
+
+```bash
+TB3_CLOCK_RATE=500 docker compose -f docker/docker-compose.yaml up
+```
+
+The Docker healthcheck is backed by a persistent odometry-freshness monitor.
+It detects stale robot simulation continuously without repeatedly starting ROS
+CLI processes and new DDS participants.
+
 Useful commands:
 
 ```bash
@@ -72,7 +86,7 @@ source install/setup.bash
 ros2 launch tb3_multi_robot follow_sim.launch.py
 ```
 
-The combined launch accepts `gui:=false`, `rviz:=false`,
+The combined launch accepts `gui:=false`, `rviz:=false`, `clock_rate:=500`,
 `follow_distance:=0.8`, and `publish_rate:=1.5` overrides. You can also launch
 the world and navigation separately with `tb3_world.launch.py` and
 `follow_tb3.launch.py`.

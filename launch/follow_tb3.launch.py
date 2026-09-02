@@ -32,6 +32,8 @@ map:=            – path to map.yaml (default: package map/map.yaml)
 use_sim_time:=true/false – (default true)
 follow_distance:=0.5 – metres tb3 trails behind tb1 (default 0.5)
 publish_rate:=2.0    – Hz goal is republished (default 2.0)
+stationary_threshold:=0.05 – translational motion threshold in metres
+stationary_angular_threshold:=0.1 – rotational motion threshold in radians
 """
 
 import os
@@ -143,6 +145,16 @@ def generate_launch_description():
         default_value='0.1',
         description='Minimum goal displacement (m) before republishing',
     ))
+    ld.add_action(DeclareLaunchArgument(
+        'stationary_threshold',
+        default_value='0.05',
+        description='Leader translation threshold (m) used to detect motion',
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'stationary_angular_threshold',
+        default_value='0.1',
+        description='Leader rotation threshold (rad) used to detect motion',
+    ))
 
     map_path = LaunchConfiguration('map')
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -198,12 +210,22 @@ def generate_launch_description():
         executable='tb3_follow_tb1',
         name='tb3_follow_tb1',
         output='screen',
+        remappings=[
+            ('/tf', '/tb1/tf'),
+            ('/tf_static', '/tb1/tf_static'),
+        ],
         parameters=[{
             'use_sim_time': use_sim_time,
             'follow_distance': LaunchConfiguration('follow_distance'),
             'publish_rate': LaunchConfiguration('publish_rate'),
             'heading_history_size': LaunchConfiguration('heading_history_size'),
             'deadband_distance': LaunchConfiguration('deadband_distance'),
+            'stationary_threshold': LaunchConfiguration(
+                'stationary_threshold'
+            ),
+            'stationary_angular_threshold': LaunchConfiguration(
+                'stationary_angular_threshold'
+            ),
         }],
     )
     ld.add_action(follow_node)

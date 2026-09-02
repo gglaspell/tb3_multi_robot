@@ -51,14 +51,17 @@ services:
     command: >
       ros2 launch tb3_multi_robot tb3_world.launch.py
       gui:=${TB3_GUI:-true}
+      clock_rate:=${TB3_CLOCK_RATE:-250.0}
     healthcheck:
       test:
         - CMD-SHELL
         - >-
-          /entrypoint.sh timeout 5s ros2 topic echo /tb1/odom --once >/dev/null 2>&1 &&
-          /entrypoint.sh timeout 5s ros2 topic echo /tb3/odom --once >/dev/null 2>&1
+          test -f /tmp/tb3_multi_robot.ready &&
+          tb3_health_now=$$(date +%s) &&
+          tb3_health_updated=$$(stat -c %Y /tmp/tb3_multi_robot.ready) &&
+          [ $$((tb3_health_now - tb3_health_updated)) -le 3 ]
       interval: 2s
-      timeout: 12s
+      timeout: 1s
       retries: 30
       start_period: 5s
     restart: on-failure
