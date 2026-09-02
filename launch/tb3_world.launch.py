@@ -47,6 +47,9 @@ def generate_launch_description():
     gui = LaunchConfiguration('gui')
     clock_rate = LaunchConfiguration('clock_rate')
     world_name = LaunchConfiguration('world')
+    mapping_use_ground_truth_odom = LaunchConfiguration(
+        'mapping_use_ground_truth_odom'
+    )
     world_path = PathJoinSubstitution([
         tb3_multi_dir,
         'worlds',
@@ -108,6 +111,14 @@ def generate_launch_description():
         description=(
             'Maximum ROS /clock publication rate in Hz. Gazebo physics and '
             'the /clock_raw stream remain at their native 1 kHz rate.'
+        ),
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'mapping_use_ground_truth_odom',
+        default_value='true',
+        description=(
+            'Use Gazebo world-pose odometry for tb1 navigation and SLAM; '
+            'wheel-integrated odometry remains on /tb1/wheel_odom'
         ),
     ))
 
@@ -186,16 +197,48 @@ def generate_launch_description():
         bridge_template = os.path.join(
             tb3_multi_dir, 'params', f'{tb3_model}_bridge.yaml'
         )
-        namespaced_bridge = create_namespaced_bridge_yaml(
-            bridge_template, namespace
-        )
-
-        bridge_node = Node(
-            package='ros_gz_bridge',
-            executable='parameter_bridge',
-            arguments=['--ros-args', '-p', f'config_file:={namespaced_bridge}'],
-            output='screen',
-        )
+        if namespace == 'tb1':
+            wheel_bridge = create_namespaced_bridge_yaml(
+                bridge_template, namespace, use_ground_truth_odom=False
+            )
+            truth_bridge = create_namespaced_bridge_yaml(
+                bridge_template, namespace, use_ground_truth_odom=True
+            )
+            bridge_nodes = [
+                Node(
+                    package='ros_gz_bridge',
+                    executable='parameter_bridge',
+                    name=f'{namespace}_bridge',
+                    arguments=[
+                        '--ros-args', '-p', f'config_file:={truth_bridge}'
+                    ],
+                    output='screen',
+                    condition=IfCondition(mapping_use_ground_truth_odom),
+                ),
+                Node(
+                    package='ros_gz_bridge',
+                    executable='parameter_bridge',
+                    name=f'{namespace}_bridge',
+                    arguments=[
+                        '--ros-args', '-p', f'config_file:={wheel_bridge}'
+                    ],
+                    output='screen',
+                    condition=UnlessCondition(mapping_use_ground_truth_odom),
+                ),
+            ]
+        else:
+            namespaced_bridge = create_namespaced_bridge_yaml(
+                bridge_template, namespace
+            )
+            bridge_nodes = [Node(
+                package='ros_gz_bridge',
+                executable='parameter_bridge',
+                name=f'{namespace}_bridge',
+                arguments=[
+                    '--ros-args', '-p', f'config_file:={namespaced_bridge}'
+                ],
+                output='screen',
+            )]
 
         # Add image bridge if model has camera
         image_bridge = None
@@ -211,7 +254,8 @@ def generate_launch_description():
         # Add robot-related nodes
         ld.add_action(robot_state_publisher)
         ld.add_action(spawner_node)
-        ld.add_action(bridge_node)
+        for bridge_node in bridge_nodes:
+            ld.add_action(bridge_node)
         if image_bridge:
             ld.add_action(image_bridge)
 

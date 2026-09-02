@@ -55,6 +55,9 @@ def generate_launch_description():
             'gui': gui,
             'clock_rate': clock_rate,
             'world': world_name,
+            'mapping_use_ground_truth_odom': LaunchConfiguration(
+                'mapping_use_ground_truth_odom'
+            ),
         }.items(),
     )
 
@@ -67,11 +70,17 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'autostart': autostart,
             'auto_map': auto_map,
+            'mapping_use_ground_truth_odom': LaunchConfiguration(
+                'mapping_use_ground_truth_odom'
+            ),
             'use_ground_truth_pose': LaunchConfiguration(
                 'use_ground_truth_pose'
             ),
             'auto_mapper_startup_delay': LaunchConfiguration(
                 'auto_mapper_startup_delay'
+            ),
+            'auto_mapper_min_free_neighbors': LaunchConfiguration(
+                'auto_mapper_min_free_neighbors'
             ),
             'map_output_path': LaunchConfiguration('map_output_path'),
             'rviz': rviz,
@@ -141,6 +150,13 @@ def generate_launch_description():
             description='Have tb1 build the map and explore its frontiers',
         ),
         DeclareLaunchArgument(
+            'mapping_use_ground_truth_odom', default_value='true',
+            description=(
+                'Use stable Gazebo odometry for tb1 SLAM while retaining '
+                'wheel odometry on /tb1/wheel_odom'
+            ),
+        ),
+        DeclareLaunchArgument(
             'use_ground_truth_pose', default_value='true',
             description=(
                 'Use slip-free Gazebo pose for cross-map follower accuracy'
@@ -149,6 +165,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'auto_mapper_startup_delay', default_value='8.0',
             description='Seconds of SLAM warmup before frontier exploration',
+        ),
+        DeclareLaunchArgument(
+            'auto_mapper_min_free_neighbors', default_value='2',
+            description=(
+                'Free neighbors required to qualify an unknown frontier cell'
+            ),
         ),
         DeclareLaunchArgument(
             'map_output_path', default_value='/tmp/tb1_map',

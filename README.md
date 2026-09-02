@@ -137,12 +137,26 @@ Automatic mapping is enabled by default. SLAM Toolbox publishes `/tb1/map`,
 and `auto_mapper` selects reachable frontiers and sends goals to
 `/tb1/navigate_to_pose`. It periodically snapshots the generated map at
 `map_output_path` (default `/tmp/tb1_map`). RViz shows the live map and frontier
-markers.
+markers. The mapping profile consumes every update from the 10 Hz lidar stream
+with 0.05 m / 0.05 rad scan-insertion thresholds and publishes map updates once
+per second. It
+qualifies scan-edge frontiers with two adjacent free cells, which keeps curved
+laser boundaries connected instead of ending exploration on fragmented edges.
+Because the Burger lidar covers 360 degrees, the mapping profile accepts any
+terminal yaw once a frontier position is reached, avoiding no-value rotations.
+Override this with `auto_mapper_min_free_neighbors:=N` if a noisier sensor needs
+stricter filtering.
 
-SLAM continues to use realistic lidar and wheel odometry. Separately, the
-follower consumes a slip-free Gazebo pose already expressed in shared world
-coordinates; this keeps `tb3`'s static world map aligned even when SLAM
-performs a large loop-closure correction.
+In simulation, tb1 navigation and SLAM default to Gazebo's independent
+world-pose odometry on `/tb1/odom`, preventing wheel-integration drift from
+warping long mapping runs. In this mode, SLAM Toolbox rasterizes against that
+pose source without applying redundant scan-matching or loop corrections. The
+original realistic stream is retained on
+`/tb1/wheel_odom` for testing and comparison. Set
+`mapping_use_ground_truth_odom:=false` (or
+`TB3_MAPPING_GROUND_TRUTH_ODOM=false` with Compose) to make `/tb1/odom` use the
+wheel-integrated source again. Separately, the follower consumes a slip-free
+Gazebo pose in shared world coordinates so `tb3`'s static map stays aligned.
 
 Pause automatic exploration before sending a manual leader goal:
 

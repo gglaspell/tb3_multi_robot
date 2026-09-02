@@ -39,28 +39,31 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    GroupAction,
     IncludeLaunchDescription,
     LogInfo,
 )
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
     EnvironmentVariable,
     LaunchConfiguration,
     PythonExpression,
 )
-from launch_ros.actions import Node
+from launch_ros.actions import Node, PushROSNamespace, SetRemap
 from launch_ros.parameter_descriptions import ParameterValue
 
 from multi_robot_scripts.utils import (
     generate_mapping_nav2_params,
+    generate_mapping_slam_params,
     generate_rviz_config,
 )
 
 
 def _nav2_bringup(robot_name: str, params_path: str, map_path,
                   use_sim_time, autostart, use_composition,
-                  log_level, slam='False') -> IncludeLaunchDescription:
+                  log_level, slam='False',
+                  use_localization='True') -> IncludeLaunchDescription:
     """Return a namespaced Nav2 bringup action for a single robot."""
     return IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -82,7 +85,7 @@ def _nav2_bringup(robot_name: str, params_path: str, map_path,
             # Jazzy's bringup launch evaluates these values as Python
             # expressions, so use Python Boolean spelling here.
             'slam': slam,
-            'use_localization': 'True',
+            'use_localization': use_localization,
         }.items(),
     )
 
@@ -103,6 +106,12 @@ def generate_launch_description():
     )
     params_tb1_mapping = generate_mapping_nav2_params(
         'tb1', params_tb1, slam_config
+    )
+    params_tb1_slam_wheel = generate_mapping_slam_params(
+        'tb1', slam_config, use_scan_matching=True
+    )
+    params_tb1_slam_truth = generate_mapping_slam_params(
+        'tb1', slam_config, use_scan_matching=False
     )
 
     # ── Launch arguments ──────────────────────────────────────────────────────
@@ -146,6 +155,14 @@ def generate_launch_description():
         description='Use tb1 SLAM and frontier exploration instead of AMCL',
     ))
     ld.add_action(DeclareLaunchArgument(
+        'mapping_use_ground_truth_odom',
+        default_value='false',
+        description=(
+            'Disable SLAM pose correction when Gazebo truth odometry drives '
+            'the leader; follow_sim.launch.py enables this by default'
+        ),
+    ))
+    ld.add_action(DeclareLaunchArgument(
         'use_ground_truth_pose',
         default_value='true',
         description=(
@@ -156,6 +173,13 @@ def generate_launch_description():
         'auto_mapper_startup_delay',
         default_value='8.0',
         description='Seconds of SLAM warmup before frontier exploration',
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'auto_mapper_min_free_neighbors',
+        default_value='2',
+        description=(
+            'Free neighbors required to qualify an unknown frontier cell'
+        ),
     ))
     ld.add_action(DeclareLaunchArgument(
         'map_output_path',
@@ -205,9 +229,12 @@ def generate_launch_description():
     rviz = LaunchConfiguration('rviz')
     rviz_render_threads = LaunchConfiguration('rviz_render_threads')
     auto_map = LaunchConfiguration('auto_map')
+    mapping_use_ground_truth_odom = LaunchConfiguration(
+        'mapping_use_ground_truth_odom'
+    )
     use_ground_truth_pose = LaunchConfiguration('use_ground_truth_pose')
-    auto_map_python_bool = PythonExpression([
-        "'True' if '", auto_map, "'.lower() == 'true' else 'False'",
+    localization_python_bool = PythonExpression([
+        "'False' if '", auto_map, "'.lower() == 'true' else 'True'",
     ])
     log_level = LaunchConfiguration('log_level')
 
@@ -215,8 +242,66 @@ def generate_launch_description():
     ld.add_action(LogInfo(msg='[follow_tb3] Launching Nav2 for tb1 (NavigateToPose mode)'))
     ld.add_action(_nav2_bringup(
         'tb1', params_tb1_mapping, map_path, use_sim_time,
-        autostart, use_composition, log_level, slam=auto_map_python_bool,
+        autostart, use_composition, log_level,
+        use_localization=localization_python_bool,
     ))
+
+    # Nav2 Jazzy forwards the combined parameter file to a namespaced SLAM
+    # node without applying its namespace rewrite. Launch SLAM Toolbox and its
+    # map saver explicitly so the tuned, fully-qualified profile is honored.
+    def mapping_actions(slam_params):
+        return [
+            PushROSNamespace('tb1'),
+            SetRemap(src='/scan', dst='scan'),
+            SetRemap(src='/tf', dst='tf'),
+            SetRemap(src='/tf_static', dst='tf_static'),
+            SetRemap(src='/map', dst='map'),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(os.path.join(
+                    get_package_share_directory('slam_toolbox'),
+                    'launch',
+                    'online_sync_launch.py',
+                )),
+                launch_arguments={
+                    'autostart': autostart,
+                    'slam_params_file': slam_params,
+                    'use_sim_time': use_sim_time,
+                }.items(),
+            ),
+            Node(
+                package='nav2_map_server',
+                executable='map_saver_server',
+                name='map_saver',
+                output='screen',
+                parameters=[{'use_sim_time': use_sim_time}],
+            ),
+            Node(
+                package='nav2_lifecycle_manager',
+                executable='lifecycle_manager',
+                name='lifecycle_manager_slam',
+                output='screen',
+                parameters=[{
+                    'autostart': autostart,
+                    'node_names': ['map_saver'],
+                    'use_sim_time': use_sim_time,
+                }],
+            ),
+        ]
+
+    mapping_stack = GroupAction(
+        condition=IfCondition(auto_map),
+        actions=[
+            GroupAction(
+                condition=IfCondition(mapping_use_ground_truth_odom),
+                actions=mapping_actions(params_tb1_slam_truth),
+            ),
+            GroupAction(
+                condition=UnlessCondition(mapping_use_ground_truth_odom),
+                actions=mapping_actions(params_tb1_slam_wheel),
+            ),
+        ],
+    )
+    ld.add_action(mapping_stack)
 
     rviz_tb1 = Node(
         package='rviz2',
@@ -278,6 +363,13 @@ def generate_launch_description():
             'map_path': LaunchConfiguration('map_output_path'),
             'startup_delay_sec': LaunchConfiguration(
                 'auto_mapper_startup_delay'
+            ),
+            # A four-neighbor threshold fragments the curved boundary of a
+            # laser-built map into sub-threshold islands. Two rejects isolated
+            # speckle while preserving continuous, navigable scan frontiers.
+            'min_free_threshold': ParameterValue(
+                LaunchConfiguration('auto_mapper_min_free_neighbors'),
+                value_type=int,
             ),
         }],
     )

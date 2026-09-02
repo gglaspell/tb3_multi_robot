@@ -22,21 +22,48 @@ import tempfile
 import yaml
 
 
-def create_namespaced_bridge_yaml(base_yaml_path, namespace):
-    """Create a temporary namespaced bridge YAML for ros_gz_bridge."""
+def create_namespaced_bridge_yaml(
+    base_yaml_path, namespace, use_ground_truth_odom=False
+):
+    """Create a namespaced bridge YAML with selectable primary odometry."""
     with open(base_yaml_path, 'r') as f:
         bridges = yaml.safe_load(f)
 
-    # Gazebo's OdometryPublisher reads the simulated world pose instead of
-    # integrating wheel motion. Keep this separate from the realistic odometry
-    # used by SLAM so it is available only for simulation truth/validation.
-    bridges.append({
+    # Keep wheel-integrated odometry available for realism and diagnostics. In
+    # the simulation-accuracy profile, Gazebo's independent world-pose
+    # OdometryPublisher becomes the primary odom/TF source used by Nav2 and
+    # SLAM, while the original stream moves to wheel_odom.
+    configured_bridges = []
+    for bridge in bridges:
+        if use_ground_truth_odom and bridge['ros_topic_name'] == 'tf':
+            continue
+        if use_ground_truth_odom and bridge['ros_topic_name'] == 'odom':
+            bridge['ros_topic_name'] = 'wheel_odom'
+        configured_bridges.append(bridge)
+
+    ground_truth_odom = {
         'ros_topic_name': 'ground_truth_odom',
         'gz_topic_name': 'ground_truth_odom',
         'ros_type_name': 'nav_msgs/msg/Odometry',
         'gz_type_name': 'gz.msgs.Odometry',
         'direction': 'GZ_TO_ROS',
-    })
+    }
+    configured_bridges.append(ground_truth_odom)
+
+    if use_ground_truth_odom:
+        configured_bridges.extend([
+            {
+                **ground_truth_odom,
+                'ros_topic_name': 'odom',
+            },
+            {
+                'ros_topic_name': 'tf',
+                'gz_topic_name': 'ground_truth_tf',
+                'ros_type_name': 'tf2_msgs/msg/TFMessage',
+                'gz_type_name': 'gz.msgs.Pose_V',
+                'direction': 'GZ_TO_ROS',
+            },
+        ])
 
     if namespace and not namespace.endswith('/'):
         namespace_with_slash = namespace + '/'
@@ -44,7 +71,7 @@ def create_namespaced_bridge_yaml(base_yaml_path, namespace):
         namespace_with_slash = namespace
 
     namespaced_bridges = []
-    for bridge in bridges:
+    for bridge in configured_bridges:
         if bridge['ros_topic_name'] not in ['clock']:
             bridge['ros_topic_name'] = (
                 f"{namespace_with_slash}{bridge['ros_topic_name']}"
@@ -55,7 +82,10 @@ def create_namespaced_bridge_yaml(base_yaml_path, namespace):
             )
         namespaced_bridges.append(bridge)
 
-    output_path = f"/tmp/{namespace.strip('/')}_bridge.yaml"
+    profile = 'truth' if use_ground_truth_odom else 'wheel'
+    output_path = os.path.join(
+        tempfile.gettempdir(), f"{namespace.strip('/')}_{profile}_bridge.yaml"
+    )
     with open(output_path, 'w') as f:
         yaml.dump(namespaced_bridges, f)
 
@@ -92,7 +122,7 @@ def load_sdf_with_namespace(model_path, namespace):
     ground_truth_plugin = f"""
     <plugin filename="gz-sim-odometry-publisher-system"
             name="gz::sim::systems::OdometryPublisher">
-      <odom_frame>ground_truth_odom</odom_frame>
+      <odom_frame>odom</odom_frame>
       <robot_base_frame>base_footprint</robot_base_frame>
       <odom_publish_frequency>20</odom_publish_frequency>
       <odom_topic>{namespace}/ground_truth_odom</odom_topic>
@@ -135,12 +165,10 @@ def generate_rviz_config(robot_name, base_config_path, map_topic='/map'):
     return output_config_path
 
 
-def generate_mapping_nav2_params(
-    robot_name, base_config_path, slam_config_path
+def _mapping_slam_parameters(
+    robot_name, slam_config_path, use_scan_matching=True
 ):
-    """Merge SLAM Toolbox settings into a robot's Nav2 parameter file."""
-    with open(base_config_path, 'r') as config_file:
-        config = yaml.safe_load(config_file)
+    """Return tuned SLAM Toolbox parameters for one robot."""
     with open(slam_config_path, 'r') as slam_file:
         slam_config = yaml.safe_load(slam_file)
 
@@ -152,20 +180,68 @@ def generate_mapping_nav2_params(
         'map_frame': 'map',
         'map_update_interval': 1.0,
         'max_laser_range': 3.5,
-        'minimum_time_interval': 0.2,
-        'minimum_travel_distance': 0.1,
-        'minimum_travel_heading': 0.1,
+        # The 10 Hz stream commonly arrives a fraction under 0.1 s apart.
+        # A 0.1 s gate therefore discarded alternating scans; 0.05 s accepts
+        # every sensor update while still rejecting accidental duplicates.
+        'minimum_time_interval': 0.05,
+        'minimum_travel_distance': 0.05,
+        'minimum_travel_heading': 0.05,
         'odom_frame': 'odom',
         'scan_topic': f'/{robot_name}/scan',
         'transform_publish_period': 0.02,
         'use_map_saver': True,
+        'use_scan_matching': use_scan_matching,
     })
+    if not use_scan_matching:
+        # Exact simulation odometry is already a stronger pose source. Loop
+        # closure would otherwise be free to bend that trajectory again.
+        slam_parameters['do_loop_closing'] = False
+    return slam_parameters
+
+
+def generate_mapping_slam_params(
+    robot_name, slam_config_path, use_scan_matching=True
+):
+    """Write a SLAM-only file matching the node's fully-qualified name."""
+    profile = 'wheel' if use_scan_matching else 'truth'
+    output_path = os.path.join(
+        tempfile.gettempdir(), f'{robot_name}_{profile}_slam_params.yaml'
+    )
+    config = {
+        f'/{robot_name}/slam_toolbox': {
+            'ros__parameters': _mapping_slam_parameters(
+                robot_name, slam_config_path, use_scan_matching
+            )
+        }
+    }
+    with open(output_path, 'w') as config_file:
+        yaml.safe_dump(config, config_file, sort_keys=False)
+
+    return output_path
+
+
+def generate_mapping_nav2_params(
+    robot_name, base_config_path, slam_config_path
+):
+    """Merge mapping-related settings into a robot's Nav2 parameter file."""
+    with open(base_config_path, 'r') as config_file:
+        config = yaml.safe_load(config_file)
+
+    slam_parameters = _mapping_slam_parameters(
+        robot_name, slam_config_path
+    )
     config['slam_toolbox'] = {'ros__parameters': slam_parameters}
 
     static_layer = config['global_costmap']['global_costmap'][
         'ros__parameters'
     ]['static_layer']
     static_layer['map_topic'] = f'/{robot_name}/map'
+    # The Burger lidar sees 360 degrees, so terminal yaw does not reveal any
+    # additional space. Accept any arrival heading to avoid spending tens of
+    # seconds rotating beside a frontier after reaching its position.
+    config['controller_server']['ros__parameters']['goal_checker'][
+        'yaw_goal_tolerance'
+    ] = 3.14159
     config['amcl']['ros__parameters']['map_topic'] = f'/{robot_name}/map'
     config['map_server']['ros__parameters']['topic_name'] = (
         f'/{robot_name}/map'

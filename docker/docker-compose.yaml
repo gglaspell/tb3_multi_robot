@@ -61,6 +61,7 @@ services:
       rviz_render_threads:=${TB3_RVIZ_RENDER_THREADS:-2}
       clock_rate:=${TB3_CLOCK_RATE:-250.0}
       auto_map:=${TB3_AUTO_MAP:-true}
+      mapping_use_ground_truth_odom:=${TB3_MAPPING_GROUND_TRUTH_ODOM:-true}
       map_output_path:=${TB3_MAP_OUTPUT_PATH:-/tmp/tb1_map}
     healthcheck:
       test:
