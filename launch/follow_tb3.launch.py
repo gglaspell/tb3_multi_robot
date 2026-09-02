@@ -43,6 +43,7 @@ from launch.actions import (
     IncludeLaunchDescription,
     LogInfo,
 )
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -51,7 +52,8 @@ from multi_robot_scripts.utils import generate_rviz_config
 
 
 def _nav2_bringup(robot_name: str, params_path: str, map_path,
-                  use_sim_time) -> IncludeLaunchDescription:
+                  use_sim_time, autostart, use_composition,
+                  log_level) -> IncludeLaunchDescription:
     """Return a namespaced Nav2 bringup action for a single robot."""
     return IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -67,7 +69,13 @@ def _nav2_bringup(robot_name: str, params_path: str, map_path,
             'params_file': params_path,
             'use_namespace': 'true',
             'namespace': robot_name,
-            'autostart': 'true',
+            'autostart': autostart,
+            'use_composition': use_composition,
+            'log_level': log_level,
+            # Jazzy's bringup launch evaluates these values as Python
+            # expressions, so use Python Boolean spelling here.
+            'slam': 'False',
+            'use_localization': 'True',
         }.items(),
     )
 
@@ -96,6 +104,26 @@ def generate_launch_description():
         description='Use simulation clock',
     ))
     ld.add_action(DeclareLaunchArgument(
+        'autostart',
+        default_value='true',
+        description='Automatically activate each Nav2 stack',
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'use_composition',
+        default_value='True',
+        description='Run each Nav2 stack in a component container',
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'rviz',
+        default_value='true',
+        description='Start one RViz instance for each robot',
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'log_level',
+        default_value='info',
+        description='Nav2 logging level',
+    ))
+    ld.add_action(DeclareLaunchArgument(
         'follow_distance',
         default_value='0.5',
         description='Metres tb3 trails behind tb1',
@@ -118,10 +146,17 @@ def generate_launch_description():
 
     map_path = LaunchConfiguration('map')
     use_sim_time = LaunchConfiguration('use_sim_time')
+    autostart = LaunchConfiguration('autostart')
+    use_composition = LaunchConfiguration('use_composition')
+    rviz = LaunchConfiguration('rviz')
+    log_level = LaunchConfiguration('log_level')
 
     # ── tb1: normal Nav2 bringup ──────────────────────────────────────────────
     ld.add_action(LogInfo(msg='[follow_tb3] Launching Nav2 for tb1 (NavigateToPose mode)'))
-    ld.add_action(_nav2_bringup('tb1', params_tb1, map_path, use_sim_time))
+    ld.add_action(_nav2_bringup(
+        'tb1', params_tb1, map_path, use_sim_time,
+        autostart, use_composition, log_level,
+    ))
 
     rviz_tb1 = Node(
         package='rviz2',
@@ -132,12 +167,16 @@ def generate_launch_description():
         parameters=[{'use_sim_time': use_sim_time, 'log_level': 'warn'}],
         remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static')],
         output='screen',
+        condition=IfCondition(rviz),
     )
     ld.add_action(rviz_tb1)
 
     # ── tb3: follow-mode Nav2 bringup ─────────────────────────────────────────
     ld.add_action(LogInfo(msg='[follow_tb3] Launching Nav2 for tb3 (FollowDynamicPoint mode)'))
-    ld.add_action(_nav2_bringup('tb3', params_tb3, map_path, use_sim_time))
+    ld.add_action(_nav2_bringup(
+        'tb3', params_tb3, map_path, use_sim_time,
+        autostart, use_composition, log_level,
+    ))
 
     rviz_tb3 = Node(
         package='rviz2',
@@ -148,6 +187,7 @@ def generate_launch_description():
         parameters=[{'use_sim_time': use_sim_time, 'log_level': 'warn'}],
         remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static')],
         output='screen',
+        condition=IfCondition(rviz),
     )
     ld.add_action(rviz_tb3)
 

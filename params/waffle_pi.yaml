@@ -412,7 +412,8 @@ collision_monitor:
         theta_max: 1.0
     observation_sources: ["scan"]
     scan:
-      source_timeout: 0.2
+      # The simulated scan period is 0.2 s; leave room for scheduling jitter.
+      source_timeout: 1.0
       type: "scan"
       topic: "<robot_namespace>/scan"
       enabled: true

@@ -38,12 +38,13 @@ amcl:
     z_short: 0.05
     scan_topic: <robot_namespace>/scan
     map_topic: /map
-    set_initial_pose: false
+    # Match tb1's spawn pose from config/robots.yaml so Nav2 can autostart.
+    set_initial_pose: true
     always_reset_initial_pose: false
     first_map_only: false
     initial_pose:
-      x: 0.0
-      y: 0.0
+      x: -1.5
+      y: -0.5
       z: 0.0
       yaw: 0.0
 
@@ -413,7 +414,8 @@ collision_monitor:
         theta_max: 1.0
     observation_sources: ["scan"]
     scan:
-      source_timeout: 0.2
+      # The simulated scan period is 0.2 s; leave room for scheduling jitter.
+      source_timeout: 1.0
       type: "scan"
       topic: "<robot_namespace>/scan"
       enabled: true

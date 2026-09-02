@@ -123,11 +123,8 @@ class Tb3FollowTb1(Node):
         dist_moved = math.hypot(dx, dy)
 
         if dist_moved < self.stationary_threshold:
-            # tb1 stationary — re-send the last valid goal to keep Nav2 alive
-            if self._last_goal is None:
-                return
-            gx, gy = self._last_goal
-            self._send_goal(gx, gy, self._last_heading)
+            # An accepted NavigateToPose action remains active until completion;
+            # re-sending the same pose here would cancel it every timer tick.
             return
 
         # Heading tb1 is travelling along

@@ -22,11 +22,13 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     AppendEnvironmentVariable,
-    IncludeLaunchDescription,
     DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    SetEnvironmentVariable,
 )
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 from multi_robot_scripts.utils import load_sdf_with_namespace, create_namespaced_bridge_yaml
@@ -36,24 +38,63 @@ def generate_launch_description():
     # Paths
     tb3_multi_dir = get_package_share_directory('tb3_multi_robot')
     ros_gz_sim_dir = get_package_share_directory('ros_gz_sim')
+    turtlebot3_gazebo_dir = get_package_share_directory('turtlebot3_gazebo')
 
     # Simulation config
-    use_sim_time = LaunchConfiguration('use_sim_time', default='true')
+    use_sim_time = LaunchConfiguration('use_sim_time')
+    gui = LaunchConfiguration('gui')
     world_path = os.path.join(tb3_multi_dir, 'worlds', 'tb3_world.world')
 
     # Launch Gazebo server and client
     gzserver_cmd = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(ros_gz_sim_dir, 'launch', 'gz_sim.launch.py')),
-        launch_arguments={'gz_args': f'-r -s -v2 {world_path}', 'on_exit_shutdown': 'true'}.items()
+        launch_arguments={'gz_args': f'-r -s -v2 {world_path}', 'on_exit_shutdown': 'true'}.items(),
+        condition=IfCondition(gui),
+    )
+    gzserver_headless_cmd = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(ros_gz_sim_dir, 'launch', 'gz_sim.launch.py')),
+        launch_arguments={
+            'gz_args': f'-r -s --headless-rendering -v2 {world_path}',
+            'on_exit_shutdown': 'true',
+        }.items(),
+        condition=UnlessCondition(gui),
     )
     gzclient_cmd = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(ros_gz_sim_dir, 'launch', 'gz_sim.launch.py')),
-        launch_arguments={'gz_args': '-g -v2', 'on_exit_shutdown': 'true'}.items()
+        launch_arguments={'gz_args': '-g -v2', 'on_exit_shutdown': 'true'}.items(),
+        condition=IfCondition(gui),
     )
 
     # Main LaunchDescription
     ld = LaunchDescription()
+    ld.add_action(DeclareLaunchArgument(
+        'use_sim_time',
+        default_value='true',
+        description='Use the Gazebo simulation clock',
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'gui',
+        default_value='true',
+        description='Start the Gazebo graphical client',
+    ))
+
+    # Set model search paths before Gazebo starts. The local package contains
+    # the robot/world SDF files, while turtlebot3_gazebo supplies common meshes.
+    ld.add_action(AppendEnvironmentVariable(
+        'GZ_SIM_RESOURCE_PATH',
+        os.path.join(tb3_multi_dir, 'models'),
+    ))
+    ld.add_action(AppendEnvironmentVariable(
+        'GZ_SIM_RESOURCE_PATH',
+        os.path.join(turtlebot3_gazebo_dir, 'models'),
+    ))
+    # Software EGL makes GPU-lidar rendering deterministic in headless
+    # containers that do not have the host NVIDIA userspace driver mounted.
+    ld.add_action(SetEnvironmentVariable(
+        'LIBGL_ALWAYS_SOFTWARE', '1', condition=UnlessCondition(gui),
+    ))
     ld.add_action(gzserver_cmd)
+    ld.add_action(gzserver_headless_cmd)
     ld.add_action(gzclient_cmd)
 
     # Load robot config
@@ -65,7 +106,6 @@ def generate_launch_description():
     tb3_model = os.environ.get('TURTLEBOT3_MODEL', 'burger')
     model_dir = f'turtlebot3_{tb3_model}'
     remappings = [("/tf", "tf"), ("/tf_static", "tf_static")]
-    frame_prefix = LaunchConfiguration('frame_prefix', default='')
     urdf_file_name = 'turtlebot3_' + tb3_model + '.urdf'
     urdf_path = os.path.join(
         tb3_multi_dir,
@@ -91,7 +131,9 @@ def generate_launch_description():
             parameters=[{
                 'use_sim_time': use_sim_time,
                 'robot_description': robot_desc,
-                'frame_prefix': PythonExpression(["'", frame_prefix, "/'"])
+                # TF is isolated by the per-robot topic namespace, so frame
+                # IDs must remain unprefixed to match the Nav2 parameters.
+                'frame_prefix': '',
             }])
 
         spawner_node = Node(
@@ -157,11 +199,5 @@ def generate_launch_description():
         arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'],
     )
     ld.add_action(clock_bridge)
-
-    # Add GZ model path to env
-    ld.add_action(AppendEnvironmentVariable(
-        'GZ_SIM_RESOURCE_PATH',
-        os.path.join(tb3_multi_dir, 'models'))
-    )
 
     return ld

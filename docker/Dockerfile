@@ -1,39 +1,19 @@
 # Base image with ROS 2 Jazzy Desktop
 FROM osrf/ros:jazzy-desktop-full
 
+SHELL ["/bin/bash", "-c"]
+
 # ── Build-time environment ────────────────────────────────────────────────────
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=jazzy
 
 # ── System dependencies ───────────────────────────────────────────────────────
-# FIX: added ros-jazzy-tf-transformations — required by turtlebot3_drive.py and
-#      tb3_follow_tb1.py (tf_transformations Python package).
-# FIX: added ros-jazzy-nav2-bt-navigator so follow_dynamic_point.xml BT is
-#      available inside the container.
-# FIX: added ros-jazzy-behaviortree-cpp for BT runtime support.
-# FIX: added python3-transforms3d as fallback quaternion/euler helper.
-# FIX: consolidated into a single RUN layer for smaller image size.
-RUN apt-get update && apt-get install -y \
-    git \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-colcon-common-extensions \
     python3-rosdep \
-    python3-vcstool \
-    curl \
-    ros-jazzy-rmw-implementation \
     ros-jazzy-rmw-cyclonedds-cpp \
-    ros-jazzy-tf-transformations \
-    ros-jazzy-nav2-bt-navigator \
-    ros-jazzy-behaviortree-cpp \
-    python3-transforms3d \
-    mesa-vulkan-drivers
-
-# ── CycloneDDS config ─────────────────────────────────────────────────────────
-RUN printf '<CycloneDDS>\n\
-  <Discovery>\n\
-    <ParticipantIndex>auto</ParticipantIndex>\n\
-    <MaxAutoParticipantIndex>100</MaxAutoParticipantIndex>\n\
-  </Discovery>\n\
-</CycloneDDS>\n' > /etc/cyclonedds.xml
+    mesa-vulkan-drivers \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV CYCLONEDDS_URI=file:///etc/cyclonedds.xml
 
@@ -45,23 +25,41 @@ ENV TURTLEBOT3_MODEL=burger
 # FIX: GZ_SIM_RESOURCE_PATH was missing — Gazebo cannot find TB3 models without it.
 ENV GZ_SIM_RESOURCE_PATH=/opt/ros2_ws/install/tb3_multi_robot/share/tb3_multi_robot/models
 
-# ── rosdep ────────────────────────────────────────────────────────────────────
-RUN rosdep update
-
 # ── Workspace ─────────────────────────────────────────────────────────────────
 WORKDIR /opt/ros2_ws
 RUN mkdir -p src && chmod -R a+rwx /opt/ros2_ws
 
-# FIX: original cloned upstream arshadlab/tb3_multi_robot; changed to your fork
-#      so that follow_tb3.launch.py, tb3_follow_tb1.py, and
-#      burger_nav2_params_tb3.yaml are present in the image.
-RUN git clone https://github.com/gglaspell/tb3_multi_robot.git src/tb3_multi_robot -b follow
+# Resolve dependencies from this checkout's manifest. Copying the manifest
+# separately keeps this expensive layer cached while source files are edited.
+COPY package.xml src/tb3_multi_robot/package.xml
+RUN apt-get update \
+    && rosdep update \
+    && source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && rosdep install \
+        --from-paths src \
+        --ignore-src \
+        --rosdistro ${ROS_DISTRO} \
+        --skip-keys ament_python \
+        -r -y \
+    && rm -rf /var/lib/apt/lists/*
 
-# ── Install ROS deps and build ─────────────────────────────────────────────────
-RUN /bin/bash -c "\
-    source /opt/ros/${ROS_DISTRO}/setup.bash && \
-    rosdep install --from-paths src --ignore-src -r -y && \
-    colcon build --symlink-install"
+# ── CycloneDDS config ─────────────────────────────────────────────────────────
+RUN printf '<CycloneDDS>\n\
+  <Domain>\n\
+    <Discovery>\n\
+      <ParticipantIndex>auto</ParticipantIndex>\n\
+      <MaxAutoParticipantIndex>100</MaxAutoParticipantIndex>\n\
+    </Discovery>\n\
+  </Domain>\n\
+</CycloneDDS>\n' > /etc/cyclonedds.xml
+
+# Build the source that is actually present in this workspace rather than
+# cloning the remote branch again during every image build.
+COPY . src/tb3_multi_robot
+
+# ── Build ──────────────────────────────────────────────────────────────────────
+RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && colcon build --symlink-install --packages-select tb3_multi_robot
 
 # ── Permissions ───────────────────────────────────────────────────────────────
 RUN chmod -R a+rX /opt/ros2_ws
@@ -72,7 +70,7 @@ RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash"   >> ~/.bashrc \
  && echo "export TURTLEBOT3_MODEL=${TURTLEBOT3_MODEL}" >> ~/.bashrc
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
-COPY entrypoint.sh /entrypoint.sh
+COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

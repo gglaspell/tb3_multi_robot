@@ -1,3 +1,98 @@
+# tb3_multi_robot — follow branch
+
+This branch runs a two-robot ROS 2 Jazzy / Gazebo Harmonic scenario in which
+`tb1` is the leader and `tb3` receives dynamically generated trailing goals.
+
+## Quick start with Docker
+
+Run these commands from the repository root. The image is built from the local
+checkout, so uncommitted source changes are included.
+
+Headless (the easiest smoke-test path):
+
+```bash
+TB3_GUI=false TB3_RVIZ=false \
+  docker compose -f docker/docker-compose.yaml up --build
+```
+
+With Gazebo and RViz windows on a Linux X11 desktop:
+
+```bash
+xhost +local:docker
+docker compose -f docker/docker-compose.yaml up --build
+```
+
+Revoke the temporary X11 permission when finished:
+
+```bash
+xhost -local:docker
+```
+
+Compose waits for live odometry from both spawned robots before starting Nav2.
+It also defaults to ROS domain 42 so the Jazzy containers do not collide with
+another ROS graph on the host. Override that domain when needed:
+
+```bash
+TB3_ROS_DOMAIN_ID=73 docker compose -f docker/docker-compose.yaml up
+```
+
+Useful commands:
+
+```bash
+# Start in the background
+TB3_GUI=false TB3_RVIZ=false \
+  docker compose -f docker/docker-compose.yaml up -d
+
+# Inspect service state and logs
+docker compose -f docker/docker-compose.yaml ps
+docker compose -f docker/docker-compose.yaml logs -f nav
+
+# Open a ROS-aware shell in the navigation container
+docker compose -f docker/docker-compose.yaml exec nav bash
+
+# Stop and remove the scenario containers
+docker compose -f docker/docker-compose.yaml down
+```
+
+The default AMCL poses match the spawn locations in `config/robots.yaml`:
+`tb1=(-1.5, -0.5)` and `tb3=(1.5, -0.5)`. If those spawn positions change,
+update the `amcl.ros__parameters.initial_pose` values in the two burger Nav2
+parameter files as well.
+
+## Native Jazzy workspace
+
+From the root of a ROS 2 Jazzy workspace containing this repository under
+`src/tb3_multi_robot`:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+rosdep install --from-paths src/tb3_multi_robot --ignore-src --rosdistro jazzy -r -y
+colcon build --packages-select tb3_multi_robot --symlink-install
+source install/setup.bash
+ros2 launch tb3_multi_robot follow_sim.launch.py
+```
+
+The combined launch accepts `gui:=false`, `rviz:=false`,
+`follow_distance:=0.8`, and `publish_rate:=1.5` overrides. You can also launch
+the world and navigation separately with `tb3_world.launch.py` and
+`follow_tb3.launch.py`.
+
+## Driving the leader
+
+Send a Nav2 goal to `tb1` from its RViz window, or from the navigation
+container:
+
+```bash
+ros2 action send_goal /tb1/navigate_to_pose nav2_msgs/action/NavigateToPose \
+  '{pose: {header: {frame_id: map}, pose: {position: {x: -0.5, y: -0.5}, orientation: {w: 1.0}}}}'
+```
+
+Once AMCL observes leader motion, `tb3_follow_tb1` sends trailing
+`NavigateToPose` goals to `/tb3/navigate_to_pose`.
+
+<details>
+<summary>Legacy branch and upstream documentation</summary>
+
 # Modifications
 
 ## TB3 Follow Mode — tb3 Follows tb1
@@ -601,3 +696,5 @@ Such remapping is also necessary in other components (e.g., Nav2) that instantia
 # 📎 Note on Included Files
 
 Some of configuration and model files (e.g., from turtlebot3 and nav2) have been directly copied into this repository. These were modified to better suit the multi-robot simulation and to ensure long-term consistency and reproducibility—even if the original upstream repositories evolve or change in the future. All original credit for these files remains with their respective authors and maintainers.
+
+</details>
