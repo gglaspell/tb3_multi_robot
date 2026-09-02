@@ -5,22 +5,40 @@
 import os
 
 from ament_index_python.packages import get_package_share_directory
+
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    SetEnvironmentVariable,
+    TimerAction,
+)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import (
+    EnvironmentVariable,
+    LaunchConfiguration,
+    PathJoinSubstitution,
+)
 
 
 def generate_launch_description():
     package_dir = get_package_share_directory('tb3_multi_robot')
     launch_dir = os.path.join(package_dir, 'launch')
 
+    ros_domain_id = LaunchConfiguration('ros_domain_id')
+    world_name = LaunchConfiguration('world')
     use_sim_time = LaunchConfiguration('use_sim_time')
     gui = LaunchConfiguration('gui')
     clock_rate = LaunchConfiguration('clock_rate')
     rviz = LaunchConfiguration('rviz')
+    rviz_render_threads = LaunchConfiguration('rviz_render_threads')
+    map_path = LaunchConfiguration('map')
+    autostart = LaunchConfiguration('autostart')
+    auto_map = LaunchConfiguration('auto_map')
     follow_distance = LaunchConfiguration('follow_distance')
     publish_rate = LaunchConfiguration('publish_rate')
+    heading_history_size = LaunchConfiguration('heading_history_size')
+    deadband_distance = LaunchConfiguration('deadband_distance')
     stationary_threshold = LaunchConfiguration('stationary_threshold')
     stationary_angular_threshold = LaunchConfiguration(
         'stationary_angular_threshold'
@@ -36,6 +54,7 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'gui': gui,
             'clock_rate': clock_rate,
+            'world': world_name,
         }.items(),
     )
 
@@ -44,10 +63,23 @@ def generate_launch_description():
             os.path.join(launch_dir, 'follow_tb3.launch.py')
         ),
         launch_arguments={
+            'map': map_path,
             'use_sim_time': use_sim_time,
+            'autostart': autostart,
+            'auto_map': auto_map,
+            'use_ground_truth_pose': LaunchConfiguration(
+                'use_ground_truth_pose'
+            ),
+            'auto_mapper_startup_delay': LaunchConfiguration(
+                'auto_mapper_startup_delay'
+            ),
+            'map_output_path': LaunchConfiguration('map_output_path'),
             'rviz': rviz,
+            'rviz_render_threads': rviz_render_threads,
             'follow_distance': follow_distance,
             'publish_rate': publish_rate,
+            'heading_history_size': heading_history_size,
+            'deadband_distance': deadband_distance,
             'stationary_threshold': stationary_threshold,
             'stationary_angular_threshold': stationary_angular_threshold,
             'use_composition': use_composition,
@@ -56,6 +88,18 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'ros_domain_id', default_value='73',
+            description='ROS domain used by every process in this scenario',
+        ),
+        SetEnvironmentVariable('ROS_DOMAIN_ID', ros_domain_id),
+        DeclareLaunchArgument(
+            'world', default_value='tb3_world',
+            description=(
+                'Scenario name: tb3_world, open_arena, corridor, or '
+                'obstacle_course'
+            ),
+        ),
         DeclareLaunchArgument(
             'use_sim_time', default_value='true',
             description='Use the Gazebo simulation clock',
@@ -73,12 +117,61 @@ def generate_launch_description():
             description='Start one RViz instance for each robot',
         ),
         DeclareLaunchArgument(
+            'rviz_render_threads',
+            default_value=EnvironmentVariable(
+                'LP_NUM_THREADS', default_value='2'
+            ),
+            description='Mesa software-rendering threads per RViz process',
+        ),
+        DeclareLaunchArgument(
+            'map',
+            default_value=PathJoinSubstitution([
+                package_dir,
+                'map',
+                [world_name, '.yaml'],
+            ]),
+            description='Map YAML; defaults to the map matching world',
+        ),
+        DeclareLaunchArgument(
+            'autostart', default_value='true',
+            description='Automatically activate both Nav2 stacks',
+        ),
+        DeclareLaunchArgument(
+            'auto_map', default_value='true',
+            description='Have tb1 build the map and explore its frontiers',
+        ),
+        DeclareLaunchArgument(
+            'use_ground_truth_pose', default_value='true',
+            description=(
+                'Use slip-free Gazebo pose for cross-map follower accuracy'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'auto_mapper_startup_delay', default_value='8.0',
+            description='Seconds of SLAM warmup before frontier exploration',
+        ),
+        DeclareLaunchArgument(
+            'map_output_path', default_value='/tmp/tb1_map',
+            description='Base path used for automatic map snapshots',
+        ),
+        DeclareLaunchArgument(
             'follow_distance', default_value='0.5',
             description='Metres tb3 trails behind tb1',
         ),
         DeclareLaunchArgument(
             'publish_rate', default_value='2.0',
             description='Hz at which follower goals are evaluated',
+        ),
+        DeclareLaunchArgument(
+            'heading_history_size', default_value='5',
+            description='Number of recent leader poses used to detect motion',
+        ),
+        DeclareLaunchArgument(
+            'deadband_distance', default_value='0.2',
+            description=(
+                'Minimum follower-goal displacement before updating; the '
+                'mapping default limits needless Nav2 preemption'
+            ),
         ),
         DeclareLaunchArgument(
             'stationary_threshold', default_value='0.05',

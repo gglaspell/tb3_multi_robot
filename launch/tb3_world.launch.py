@@ -15,10 +15,8 @@
 # Authors: Arshad Mehmood
 
 import os
-import yaml
 
 from ament_index_python.packages import get_package_share_directory
-
 from launch import LaunchDescription
 from launch.actions import (
     AppendEnvironmentVariable,
@@ -28,10 +26,14 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 
-from multi_robot_scripts.utils import load_sdf_with_namespace, create_namespaced_bridge_yaml
+from multi_robot_scripts.utils import (
+    create_namespaced_bridge_yaml,
+    load_sdf_with_namespace,
+)
+import yaml
 
 
 def generate_launch_description():
@@ -44,24 +46,38 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     gui = LaunchConfiguration('gui')
     clock_rate = LaunchConfiguration('clock_rate')
-    world_path = os.path.join(tb3_multi_dir, 'worlds', 'tb3_world.world')
+    world_name = LaunchConfiguration('world')
+    world_path = PathJoinSubstitution([
+        tb3_multi_dir,
+        'worlds',
+        [world_name, '.world'],
+    ])
 
     # Launch Gazebo server and client
     gzserver_cmd = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(ros_gz_sim_dir, 'launch', 'gz_sim.launch.py')),
-        launch_arguments={'gz_args': f'-r -s -v2 {world_path}', 'on_exit_shutdown': 'true'}.items(),
+        PythonLaunchDescriptionSource(os.path.join(
+            ros_gz_sim_dir, 'launch', 'gz_sim.launch.py'
+        )),
+        launch_arguments={
+            'gz_args': ['-r -s -v2 ', world_path],
+            'on_exit_shutdown': 'true',
+        }.items(),
         condition=IfCondition(gui),
     )
     gzserver_headless_cmd = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(ros_gz_sim_dir, 'launch', 'gz_sim.launch.py')),
+        PythonLaunchDescriptionSource(os.path.join(
+            ros_gz_sim_dir, 'launch', 'gz_sim.launch.py'
+        )),
         launch_arguments={
-            'gz_args': f'-r -s --headless-rendering -v2 {world_path}',
+            'gz_args': ['-r -s --headless-rendering -v2 ', world_path],
             'on_exit_shutdown': 'true',
         }.items(),
         condition=UnlessCondition(gui),
     )
     gzclient_cmd = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(ros_gz_sim_dir, 'launch', 'gz_sim.launch.py')),
+        PythonLaunchDescriptionSource(os.path.join(
+            ros_gz_sim_dir, 'launch', 'gz_sim.launch.py'
+        )),
         launch_arguments={'gz_args': '-g -v2', 'on_exit_shutdown': 'true'}.items(),
         condition=IfCondition(gui),
     )
@@ -77,6 +93,14 @@ def generate_launch_description():
         'gui',
         default_value='true',
         description='Start the Gazebo graphical client',
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'world',
+        default_value='tb3_world',
+        description=(
+            'Scenario name: tb3_world, open_arena, corridor, or '
+            'obstacle_course'
+        ),
     ))
     ld.add_action(DeclareLaunchArgument(
         'clock_rate',
@@ -114,7 +138,7 @@ def generate_launch_description():
     robots = [r for r in config['robots'] if r.get('enabled', True)]
     tb3_model = os.environ.get('TURTLEBOT3_MODEL', 'burger')
     model_dir = f'turtlebot3_{tb3_model}'
-    remappings = [("/tf", "tf"), ("/tf_static", "tf_static")]
+    remappings = [('/tf', 'tf'), ('/tf_static', 'tf_static')]
     urdf_file_name = 'turtlebot3_' + tb3_model + '.urdf'
     urdf_path = os.path.join(
         tb3_multi_dir,
@@ -159,8 +183,12 @@ def generate_launch_description():
             output='screen',
         )
 
-        bridge_template = os.path.join(tb3_multi_dir, 'params', f'{tb3_model}_bridge.yaml')
-        namespaced_bridge = create_namespaced_bridge_yaml(bridge_template, namespace)
+        bridge_template = os.path.join(
+            tb3_multi_dir, 'params', f'{tb3_model}_bridge.yaml'
+        )
+        namespaced_bridge = create_namespaced_bridge_yaml(
+            bridge_template, namespace
+        )
 
         bridge_node = Node(
             package='ros_gz_bridge',

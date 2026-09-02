@@ -32,6 +32,7 @@ RUN mkdir -p src && chmod -R a+rwx /opt/ros2_ws
 # Resolve dependencies from this checkout's manifest. Copying the manifest
 # separately keeps this expensive layer cached while source files are edited.
 COPY package.xml src/tb3_multi_robot/package.xml
+COPY --from=auto_mapper package.xml src/auto_mapper/package.xml
 RUN apt-get update \
     && rosdep update \
     && source /opt/ros/${ROS_DISTRO}/setup.bash \
@@ -56,10 +57,12 @@ RUN printf '<CycloneDDS>\n\
 # Build the source that is actually present in this workspace rather than
 # cloning the remote branch again during every image build.
 COPY . src/tb3_multi_robot
+COPY --from=auto_mapper . src/auto_mapper
 
 # ── Build ──────────────────────────────────────────────────────────────────────
 RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
-    && colcon build --symlink-install --packages-select tb3_multi_robot
+    && colcon build --symlink-install \
+        --packages-select auto_mapper tb3_multi_robot
 
 # ── Permissions ───────────────────────────────────────────────────────────────
 RUN chmod -R a+rX /opt/ros2_ws

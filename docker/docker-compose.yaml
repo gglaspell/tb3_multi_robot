@@ -2,8 +2,8 @@
 #
 # Services
 # --------
-#   gazebo  : Gazebo server + client — spawns world and both robots
-#   nav     : Nav2 for tb1 (normal) + Nav2 for tb3 (follow mode) + follow node
+#   simulation : complete scenario driven by follow_sim.launch.py
+#   gazebo/nav : optional split services for diagnostics (--profile split)
 #
 # Host prerequisites
 # ------------------
@@ -15,16 +15,15 @@
 #
 # Common usage
 # ------------
-#   docker compose up                          # start everything
-#   docker compose up gazebo                   # Gazebo only
-#   docker compose exec nav bash               # shell into running nav container
-#   docker compose run nav ros2 launch tb3_multi_robot follow_tb3.launch.py follow_distance:=0.8
+#   docker compose up                          # unified autonomous scenario
+#   docker compose exec simulation bash        # ROS-aware shell
+#   docker compose --profile split up gazebo   # optional Gazebo-only mode
 
 x-common-env: &common-env
   ROS_DISTRO: jazzy
   # Keep the Jazzy simulation isolated from any ROS graph already running on
   # the host. Override when intentional cross-container communication is needed.
-  ROS_DOMAIN_ID: ${TB3_ROS_DOMAIN_ID:-42}
+  ROS_DOMAIN_ID: ${TB3_ROS_DOMAIN_ID:-73}
   RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
   CYCLONEDDS_URI: file:///etc/cyclonedds.xml
   TURTLEBOT3_MODEL: burger
@@ -37,11 +36,54 @@ x-common-volumes: &common-volumes
 
 services:
 
-  # ── Gazebo: world + robot spawning ─────────────────────────────────────────
-  gazebo:
+  # ── All in one: world + SLAM/exploration + follower + RViz ─────────────────
+  simulation:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      additional_contexts:
+        auto_mapper: ../../auto_mapper
+    image: tb3_multi_robot:latest
+    container_name: tb3_sim
+    environment:
+      <<: *common-env
+      # Bound Mesa software rendering per RViz process while preserving both
+      # complete visualization profiles.
+      LP_NUM_THREADS: ${TB3_RVIZ_RENDER_THREADS:-2}
+    volumes: *common-volumes
+    network_mode: host
+    command: >
+      ros2 launch tb3_multi_robot follow_sim.launch.py
+      ros_domain_id:=${TB3_ROS_DOMAIN_ID:-73}
+      world:=${TB3_WORLD:-tb3_world}
+      gui:=${TB3_GUI:-false}
+      rviz:=${TB3_RVIZ:-true}
+      rviz_render_threads:=${TB3_RVIZ_RENDER_THREADS:-2}
+      clock_rate:=${TB3_CLOCK_RATE:-250.0}
+      auto_map:=${TB3_AUTO_MAP:-true}
+      map_output_path:=${TB3_MAP_OUTPUT_PATH:-/tmp/tb1_map}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -f /tmp/tb3_multi_robot.ready &&
+          tb3_health_now=$$(date +%s) &&
+          tb3_health_updated=$$(stat -c %Y /tmp/tb3_multi_robot.ready) &&
+          [ $$((tb3_health_now - tb3_health_updated)) -le 3 ]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+      start_period: 5s
+    restart: on-failure
+
+  # ── Gazebo: world + robot spawning ─────────────────────────────────────────
+  gazebo:
+    profiles: [split]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      additional_contexts:
+        auto_mapper: ../../auto_mapper
     image: tb3_multi_robot:latest
     container_name: tb3_gazebo
     environment:
@@ -52,6 +94,7 @@ services:
       ros2 launch tb3_multi_robot tb3_world.launch.py
       gui:=${TB3_GUI:-true}
       clock_rate:=${TB3_CLOCK_RATE:-250.0}
+      world:=${TB3_WORLD:-tb3_world}
     healthcheck:
       test:
         - CMD-SHELL
@@ -68,9 +111,12 @@ services:
 
   # ── Nav2 (both robots) + tb3_follow_tb1 node ───────────────────────────────
   nav:
+    profiles: [split]
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      additional_contexts:
+        auto_mapper: ../../auto_mapper
     image: tb3_multi_robot:latest
     container_name: tb3_nav
     environment:
@@ -89,4 +135,7 @@ services:
       follow_distance:=0.5
       publish_rate:=2.0
       rviz:=${TB3_RVIZ:-true}
+      rviz_render_threads:=${TB3_RVIZ_RENDER_THREADS:-2}
+      auto_map:=${TB3_AUTO_MAP:-true}
+      map:=/opt/ros2_ws/install/tb3_multi_robot/share/tb3_multi_robot/map/${TB3_WORLD:-tb3_world}.yaml
     restart: on-failure

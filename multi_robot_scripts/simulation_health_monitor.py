@@ -2,9 +2,9 @@
 
 """Maintain a lightweight readiness heartbeat for the simulated robots."""
 
-import time
 from functools import partial
 from pathlib import Path
+import time
 
 from nav_msgs.msg import Odometry
 
@@ -114,7 +114,8 @@ def main(args=None) -> None:
     finally:
         node.clear_ready_file()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

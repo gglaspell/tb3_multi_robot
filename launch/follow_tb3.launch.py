@@ -12,10 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-follow_tb3.launch.py
-
-Launches the full tb1-leader / tb3-follower scenario:
+"""Launch the full tb1-leader / tb3-follower scenario.
 
 1. Nav2 for tb1 → burger_nav2_params.yaml (normal NavigateToPose)
 2. Nav2 for tb3 → burger_nav2_params_tb3.yaml (FollowDynamicPoint BT)
@@ -47,15 +44,23 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import (
+    EnvironmentVariable,
+    LaunchConfiguration,
+    PythonExpression,
+)
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
-from multi_robot_scripts.utils import generate_rviz_config
+from multi_robot_scripts.utils import (
+    generate_mapping_nav2_params,
+    generate_rviz_config,
+)
 
 
 def _nav2_bringup(robot_name: str, params_path: str, map_path,
                   use_sim_time, autostart, use_composition,
-                  log_level) -> IncludeLaunchDescription:
+                  log_level, slam='False') -> IncludeLaunchDescription:
     """Return a namespaced Nav2 bringup action for a single robot."""
     return IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -76,7 +81,7 @@ def _nav2_bringup(robot_name: str, params_path: str, map_path,
             'log_level': log_level,
             # Jazzy's bringup launch evaluates these values as Python
             # expressions, so use Python Boolean spelling here.
-            'slam': 'False',
+            'slam': slam,
             'use_localization': 'True',
         }.items(),
     )
@@ -91,6 +96,14 @@ def generate_launch_description():
     params_tb1 = os.path.join(pkg_dir, 'params', f'{tb3_model}_nav2_params.yaml')
     params_tb3 = os.path.join(pkg_dir, 'params', f'{tb3_model}_nav2_params_tb3.yaml')
     rviz_template = os.path.join(pkg_dir, 'rviz', 'tb3_navigation2.rviz')
+    slam_config = os.path.join(
+        get_package_share_directory('slam_toolbox'),
+        'config',
+        'mapper_params_online_sync.yaml',
+    )
+    params_tb1_mapping = generate_mapping_nav2_params(
+        'tb1', params_tb1, slam_config
+    )
 
     # ── Launch arguments ──────────────────────────────────────────────────────
     ld = LaunchDescription()
@@ -119,6 +132,35 @@ def generate_launch_description():
         'rviz',
         default_value='true',
         description='Start one RViz instance for each robot',
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'rviz_render_threads',
+        default_value=EnvironmentVariable(
+            'LP_NUM_THREADS', default_value='2'
+        ),
+        description='Mesa software-rendering threads per RViz process',
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'auto_map',
+        default_value='false',
+        description='Use tb1 SLAM and frontier exploration instead of AMCL',
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'use_ground_truth_pose',
+        default_value='true',
+        description=(
+            'Use slip-free Gazebo pose for accurate cross-map following'
+        ),
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'auto_mapper_startup_delay',
+        default_value='8.0',
+        description='Seconds of SLAM warmup before frontier exploration',
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'map_output_path',
+        default_value='/tmp/tb1_map',
+        description='Base path used for automatic map snapshots',
     ))
     ld.add_action(DeclareLaunchArgument(
         'log_level',
@@ -161,13 +203,19 @@ def generate_launch_description():
     autostart = LaunchConfiguration('autostart')
     use_composition = LaunchConfiguration('use_composition')
     rviz = LaunchConfiguration('rviz')
+    rviz_render_threads = LaunchConfiguration('rviz_render_threads')
+    auto_map = LaunchConfiguration('auto_map')
+    use_ground_truth_pose = LaunchConfiguration('use_ground_truth_pose')
+    auto_map_python_bool = PythonExpression([
+        "'True' if '", auto_map, "'.lower() == 'true' else 'False'",
+    ])
     log_level = LaunchConfiguration('log_level')
 
     # ── tb1: normal Nav2 bringup ──────────────────────────────────────────────
     ld.add_action(LogInfo(msg='[follow_tb3] Launching Nav2 for tb1 (NavigateToPose mode)'))
     ld.add_action(_nav2_bringup(
-        'tb1', params_tb1, map_path, use_sim_time,
-        autostart, use_composition, log_level,
+        'tb1', params_tb1_mapping, map_path, use_sim_time,
+        autostart, use_composition, log_level, slam=auto_map_python_bool,
     ))
 
     rviz_tb1 = Node(
@@ -175,13 +223,65 @@ def generate_launch_description():
         executable='rviz2',
         name='rviz2',
         namespace='/tb1',
-        arguments=['-d', generate_rviz_config('tb1', rviz_template)],
+        arguments=[
+            '-d',
+            generate_rviz_config(
+                'tb1', rviz_template, map_topic='/tb1/map'
+            ),
+        ],
         parameters=[{'use_sim_time': use_sim_time, 'log_level': 'warn'}],
         remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static')],
+        additional_env={'LP_NUM_THREADS': rviz_render_threads},
         output='screen',
         condition=IfCondition(rviz),
     )
     ld.add_action(rviz_tb1)
+
+    map_pose_node = Node(
+        package='tb3_multi_robot',
+        executable='tf_pose_publisher',
+        name='map_pose_publisher',
+        namespace='/tb1',
+        output='screen',
+        condition=IfCondition(auto_map),
+        remappings=[
+            ('/tf', '/tb1/tf'),
+            ('/tf_static', '/tb1/tf_static'),
+        ],
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'target_frame': 'map',
+            'source_frame': 'base_link',
+            'pose_topic': 'map_pose',
+            'publish_rate': 5.0,
+        }],
+    )
+    ld.add_action(map_pose_node)
+
+    auto_mapper_node = Node(
+        package='auto_mapper',
+        executable='auto_mapper',
+        name='auto_mapper',
+        namespace='/tb1',
+        output='screen',
+        condition=IfCondition(auto_map),
+        remappings=[
+            ('/navigate_to_pose', '/tb1/navigate_to_pose'),
+            ('/map_server/save_map', '/tb1/map_saver/save_map'),
+            ('/frontiers', '/tb1/frontiers'),
+        ],
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'map_topic': '/tb1/map',
+            'odom_topic': '',
+            'pose_topic': '/tb1/map_pose',
+            'map_path': LaunchConfiguration('map_output_path'),
+            'startup_delay_sec': LaunchConfiguration(
+                'auto_mapper_startup_delay'
+            ),
+        }],
+    )
+    ld.add_action(auto_mapper_node)
 
     # ── tb3: follow-mode Nav2 bringup ─────────────────────────────────────────
     ld.add_action(LogInfo(msg='[follow_tb3] Launching Nav2 for tb3 (FollowDynamicPoint mode)'))
@@ -195,9 +295,13 @@ def generate_launch_description():
         executable='rviz2',
         name='rviz2',
         namespace='/tb3',
-        arguments=['-d', generate_rviz_config('tb3', rviz_template)],
+        arguments=[
+            '-d',
+            generate_rviz_config('tb3', rviz_template, map_topic='/map'),
+        ],
         parameters=[{'use_sim_time': use_sim_time, 'log_level': 'warn'}],
         remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static')],
+        additional_env={'LP_NUM_THREADS': rviz_render_threads},
         output='screen',
         condition=IfCondition(rviz),
     )
@@ -225,6 +329,9 @@ def generate_launch_description():
             ),
             'stationary_angular_threshold': LaunchConfiguration(
                 'stationary_angular_threshold'
+            ),
+            'use_ground_truth_pose': ParameterValue(
+                use_ground_truth_pose, value_type=bool
             ),
         }],
     )

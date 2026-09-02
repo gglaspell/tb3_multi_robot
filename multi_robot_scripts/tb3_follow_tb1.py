@@ -12,10 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-tb3_follow_tb1.py
+"""Send drift-corrected tb1 poses to tb3 as trailing navigation goals.
 
-Subscribes to tb1's AMCL pose (map-frame, drift-corrected) and sends
+Subscribes to tb1's localized pose and sends
 NavigateToPose action goals to tb3's Nav2 stack so tb3 trails behind tb1.
 
 Fixes vs. original:
@@ -46,23 +45,41 @@ stationary_threshold : float (default 0.05)
     Treat tb1 as stopped below this translational distance in metres.
 stationary_angular_threshold : float (default 0.1)
     Treat tb1 as stopped below this rotation in radians.
+use_ground_truth_pose : bool (default false)
+    Use Gazebo's slip-free pose, which is already expressed in the shared
+    world/map frame.
 """
 
-import math
 from collections import deque
+import math
 
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 
 from nav2_msgs.action import NavigateToPose
 
+from nav_msgs.msg import Odometry
+
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
+
+
+def compute_trailing_goal(
+    pose: tuple[float, float, float], follow_distance: float
+) -> tuple[float, float, float]:
+    """Return a goal behind a map-frame pose along its body heading."""
+    x, y, yaw = pose
+    return (
+        x - follow_distance * math.cos(yaw),
+        y - follow_distance * math.sin(yaw),
+        yaw,
+    )
 
 
 class Tb3FollowTb1(Node):
@@ -77,6 +94,7 @@ class Tb3FollowTb1(Node):
         self.declare_parameter('deadband_distance',    0.1)
         self.declare_parameter('stationary_threshold', 0.05)
         self.declare_parameter('stationary_angular_threshold', 0.1)
+        self.declare_parameter('use_ground_truth_pose', False)
 
         self.follow_distance = self.get_parameter('follow_distance').value
         self.publish_rate = self.get_parameter('publish_rate').value
@@ -92,6 +110,9 @@ class Tb3FollowTb1(Node):
         self.stationary_angular_threshold = self.get_parameter(
             'stationary_angular_threshold'
         ).value
+        self.use_ground_truth_pose = self.get_parameter(
+            'use_ground_truth_pose'
+        ).value
 
         # ── State ─────────────────────────────────────────────────────
         # Ring buffer of (x, y, yaw) tuples in the map frame
@@ -104,6 +125,7 @@ class Tb3FollowTb1(Node):
         self._active_goal_sequence: int | None = None
         self._goal_handle = None
         self._latest_amcl_pose: tuple | None = None
+        self._latest_ground_truth_pose: tuple | None = None
 
         # Receive only tb1's namespaced TF stream (remapped by the launch
         # description). It combines AMCL's map correction with live odometry,
@@ -120,6 +142,12 @@ class Tb3FollowTb1(Node):
             '/tb1/amcl_pose',
             self._amcl_callback,
             10
+        )
+        self._ground_truth_sub = self.create_subscription(
+            Odometry,
+            '/tb1/ground_truth_odom',
+            self._ground_truth_callback,
+            qos_profile_sensor_data,
         )
 
         # ── Action client: tb3 NavigateToPose ─────────────────────────
@@ -138,7 +166,8 @@ class Tb3FollowTb1(Node):
             f'tb3_follow_tb1 started — '
             f'follow_distance={self.follow_distance}m  '
             f'publish_rate={self.publish_rate}Hz  '
-            f'history_size={history_size}'
+            f'history_size={history_size}  '
+            f'ground_truth_pose={self.use_ground_truth_pose}'
         )
 
     # ── AMCL callback (map-frame pose) ────────────────────────────────
@@ -155,23 +184,42 @@ class Tb3FollowTb1(Node):
         ))[2]
         self._latest_amcl_pose = (x, y, yaw)
 
+    def _ground_truth_callback(self, msg: Odometry) -> None:
+        orientation = msg.pose.pose.orientation
+        yaw = euler_from_quaternion((
+            orientation.x,
+            orientation.y,
+            orientation.z,
+            orientation.w,
+        ))[2]
+        self._latest_ground_truth_pose = (
+            msg.pose.pose.position.x,
+            msg.pose.pose.position.y,
+            yaw,
+        )
+
     def _current_leader_pose(self) -> tuple | None:
+        if self.use_ground_truth_pose:
+            return self._latest_ground_truth_pose
+
         try:
             transform = self._tf_buffer.lookup_transform(
                 'map', 'base_link', Time()
             )
         except TransformException:
-            return self._latest_amcl_pose
+            pose = self._latest_amcl_pose
+        else:
+            translation = transform.transform.translation
+            rotation = transform.transform.rotation
+            yaw = euler_from_quaternion((
+                rotation.x,
+                rotation.y,
+                rotation.z,
+                rotation.w,
+            ))[2]
+            pose = (translation.x, translation.y, yaw)
 
-        translation = transform.transform.translation
-        rotation = transform.transform.rotation
-        yaw = euler_from_quaternion((
-            rotation.x,
-            rotation.y,
-            rotation.z,
-            rotation.w,
-        ))[2]
-        return (translation.x, translation.y, yaw)
+        return pose
 
     @staticmethod
     def _angle_difference(first: float, second: float) -> float:
@@ -210,11 +258,9 @@ class Tb3FollowTb1(Node):
         # A differential-drive robot's localized body orientation is a more
         # accurate trailing direction than a chord through noisy position
         # samples, and it continues to work while tb1 turns in place.
-        heading = p_now[2]
-
-        # Trailing point: follow_distance metres behind tb1
-        gx = p_now[0] - self.follow_distance * math.cos(heading)
-        gy = p_now[1] - self.follow_distance * math.sin(heading)
+        gx, gy, heading = compute_trailing_goal(
+            p_now, self.follow_distance
+        )
 
         # Compare with the newest requested goal, including one whose action
         # response is still pending, so callbacks cannot create duplicate work.
