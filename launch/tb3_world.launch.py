@@ -15,45 +15,130 @@
 # Authors: Arshad Mehmood
 
 import os
-import yaml
 
 from ament_index_python.packages import get_package_share_directory
-
 from launch import LaunchDescription
 from launch.actions import (
     AppendEnvironmentVariable,
-    IncludeLaunchDescription,
     DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    SetEnvironmentVariable,
 )
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 
-from multi_robot_scripts.utils import load_sdf_with_namespace, create_namespaced_bridge_yaml
+from multi_robot_scripts.utils import (
+    create_namespaced_bridge_yaml,
+    load_sdf_with_namespace,
+)
+import yaml
 
 
 def generate_launch_description():
     # Paths
     tb3_multi_dir = get_package_share_directory('tb3_multi_robot')
     ros_gz_sim_dir = get_package_share_directory('ros_gz_sim')
+    turtlebot3_gazebo_dir = get_package_share_directory('turtlebot3_gazebo')
 
     # Simulation config
-    use_sim_time = LaunchConfiguration('use_sim_time', default='true')
-    world_path = os.path.join(tb3_multi_dir, 'worlds', 'tb3_world.world')
+    use_sim_time = LaunchConfiguration('use_sim_time')
+    gui = LaunchConfiguration('gui')
+    clock_rate = LaunchConfiguration('clock_rate')
+    world_name = LaunchConfiguration('world')
+    mapping_use_ground_truth_odom = LaunchConfiguration(
+        'mapping_use_ground_truth_odom'
+    )
+    world_path = PathJoinSubstitution([
+        tb3_multi_dir,
+        'worlds',
+        [world_name, '.world'],
+    ])
 
     # Launch Gazebo server and client
     gzserver_cmd = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(ros_gz_sim_dir, 'launch', 'gz_sim.launch.py')),
-        launch_arguments={'gz_args': f'-r -s -v2 {world_path}', 'on_exit_shutdown': 'true'}.items()
+        PythonLaunchDescriptionSource(os.path.join(
+            ros_gz_sim_dir, 'launch', 'gz_sim.launch.py'
+        )),
+        launch_arguments={
+            'gz_args': ['-r -s -v2 ', world_path],
+            'on_exit_shutdown': 'true',
+        }.items(),
+        condition=IfCondition(gui),
+    )
+    gzserver_headless_cmd = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(
+            ros_gz_sim_dir, 'launch', 'gz_sim.launch.py'
+        )),
+        launch_arguments={
+            'gz_args': ['-r -s --headless-rendering -v2 ', world_path],
+            'on_exit_shutdown': 'true',
+        }.items(),
+        condition=UnlessCondition(gui),
     )
     gzclient_cmd = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(ros_gz_sim_dir, 'launch', 'gz_sim.launch.py')),
-        launch_arguments={'gz_args': '-g -v2', 'on_exit_shutdown': 'true'}.items()
+        PythonLaunchDescriptionSource(os.path.join(
+            ros_gz_sim_dir, 'launch', 'gz_sim.launch.py'
+        )),
+        launch_arguments={'gz_args': '-g -v2', 'on_exit_shutdown': 'true'}.items(),
+        condition=IfCondition(gui),
     )
 
     # Main LaunchDescription
     ld = LaunchDescription()
+    ld.add_action(DeclareLaunchArgument(
+        'use_sim_time',
+        default_value='true',
+        description='Use the Gazebo simulation clock',
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'gui',
+        default_value='true',
+        description='Start the Gazebo graphical client',
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'world',
+        default_value='tb3_world',
+        description=(
+            'Scenario name: tb3_world, open_arena, corridor, or '
+            'obstacle_course'
+        ),
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'clock_rate',
+        default_value='250.0',
+        description=(
+            'Maximum ROS /clock publication rate in Hz. Gazebo physics and '
+            'the /clock_raw stream remain at their native 1 kHz rate.'
+        ),
+    ))
+    ld.add_action(DeclareLaunchArgument(
+        'mapping_use_ground_truth_odom',
+        default_value='true',
+        description=(
+            'Use Gazebo world-pose odometry for tb1 navigation and SLAM; '
+            'wheel-integrated odometry remains on /tb1/wheel_odom'
+        ),
+    ))
+
+    # Set model search paths before Gazebo starts. The local package contains
+    # the robot/world SDF files, while turtlebot3_gazebo supplies common meshes.
+    ld.add_action(AppendEnvironmentVariable(
+        'GZ_SIM_RESOURCE_PATH',
+        os.path.join(tb3_multi_dir, 'models'),
+    ))
+    ld.add_action(AppendEnvironmentVariable(
+        'GZ_SIM_RESOURCE_PATH',
+        os.path.join(turtlebot3_gazebo_dir, 'models'),
+    ))
+    # Software EGL makes GPU-lidar rendering deterministic in headless
+    # containers that do not have the host NVIDIA userspace driver mounted.
+    ld.add_action(SetEnvironmentVariable(
+        'LIBGL_ALWAYS_SOFTWARE', '1', condition=UnlessCondition(gui),
+    ))
     ld.add_action(gzserver_cmd)
+    ld.add_action(gzserver_headless_cmd)
     ld.add_action(gzclient_cmd)
 
     # Load robot config
@@ -64,8 +149,7 @@ def generate_launch_description():
     robots = [r for r in config['robots'] if r.get('enabled', True)]
     tb3_model = os.environ.get('TURTLEBOT3_MODEL', 'burger')
     model_dir = f'turtlebot3_{tb3_model}'
-    remappings = [("/tf", "tf"), ("/tf_static", "tf_static")]
-    frame_prefix = LaunchConfiguration('frame_prefix', default='')
+    remappings = [('/tf', 'tf'), ('/tf_static', 'tf_static')]
     urdf_file_name = 'turtlebot3_' + tb3_model + '.urdf'
     urdf_path = os.path.join(
         tb3_multi_dir,
@@ -91,7 +175,9 @@ def generate_launch_description():
             parameters=[{
                 'use_sim_time': use_sim_time,
                 'robot_description': robot_desc,
-                'frame_prefix': PythonExpression(["'", frame_prefix, "/'"])
+                # TF is isolated by the per-robot topic namespace, so frame
+                # IDs must remain unprefixed to match the Nav2 parameters.
+                'frame_prefix': '',
             }])
 
         spawner_node = Node(
@@ -108,15 +194,51 @@ def generate_launch_description():
             output='screen',
         )
 
-        bridge_template = os.path.join(tb3_multi_dir, 'params', f'{tb3_model}_bridge.yaml')
-        namespaced_bridge = create_namespaced_bridge_yaml(bridge_template, namespace)
-
-        bridge_node = Node(
-            package='ros_gz_bridge',
-            executable='parameter_bridge',
-            arguments=['--ros-args', '-p', f'config_file:={namespaced_bridge}'],
-            output='screen',
+        bridge_template = os.path.join(
+            tb3_multi_dir, 'params', f'{tb3_model}_bridge.yaml'
         )
+        if namespace == 'tb1':
+            wheel_bridge = create_namespaced_bridge_yaml(
+                bridge_template, namespace, use_ground_truth_odom=False
+            )
+            truth_bridge = create_namespaced_bridge_yaml(
+                bridge_template, namespace, use_ground_truth_odom=True
+            )
+            bridge_nodes = [
+                Node(
+                    package='ros_gz_bridge',
+                    executable='parameter_bridge',
+                    name=f'{namespace}_bridge',
+                    arguments=[
+                        '--ros-args', '-p', f'config_file:={truth_bridge}'
+                    ],
+                    output='screen',
+                    condition=IfCondition(mapping_use_ground_truth_odom),
+                ),
+                Node(
+                    package='ros_gz_bridge',
+                    executable='parameter_bridge',
+                    name=f'{namespace}_bridge',
+                    arguments=[
+                        '--ros-args', '-p', f'config_file:={wheel_bridge}'
+                    ],
+                    output='screen',
+                    condition=UnlessCondition(mapping_use_ground_truth_odom),
+                ),
+            ]
+        else:
+            namespaced_bridge = create_namespaced_bridge_yaml(
+                bridge_template, namespace
+            )
+            bridge_nodes = [Node(
+                package='ros_gz_bridge',
+                executable='parameter_bridge',
+                name=f'{namespace}_bridge',
+                arguments=[
+                    '--ros-args', '-p', f'config_file:={namespaced_bridge}'
+                ],
+                output='screen',
+            )]
 
         # Add image bridge if model has camera
         image_bridge = None
@@ -132,9 +254,28 @@ def generate_launch_description():
         # Add robot-related nodes
         ld.add_action(robot_state_publisher)
         ld.add_action(spawner_node)
-        ld.add_action(bridge_node)
+        for bridge_node in bridge_nodes:
+            ld.add_action(bridge_node)
         if image_bridge:
             ld.add_action(image_bridge)
+
+    # A persistent monitor keeps Docker readiness accurate without repeatedly
+    # constructing short-lived ROS CLI nodes (and DDS discovery participants).
+    ld.add_action(Node(
+        package='tb3_multi_robot',
+        executable='simulation_health_monitor',
+        name='simulation_health_monitor',
+        output='screen',
+        respawn=True,
+        respawn_delay=1.0,
+        parameters=[{
+            'use_sim_time': False,
+            'robot_names': [robot['name'] for robot in robots],
+            'odom_timeout': 2.0,
+            'heartbeat_period': 0.5,
+            'ready_file': '/tmp/tb3_multi_robot.ready',
+        }],
+    ))
 
     # In a multi-robot setup using Gazebo Sim (Harmonic or later), each robot typically
     # requires a separate ROS-Gazebo bridge to relay topics such as sensor data, odometry,
@@ -148,20 +289,31 @@ def generate_launch_description():
     # This ensures consistent simulation time across the entire ROS 2 system while supporting
     # multiple robot instances with their own bridges.
 
-    # Global clock bridge
+    # Preserve the native 1 kHz Gazebo clock for high-resolution diagnostics,
+    # then fan out exact clock samples at a configurable rate appropriate for
+    # Nav2's 10-20 Hz control loops. This avoids delivering every physics tick
+    # to every use_sim_time node without changing physics integration accuracy.
     clock_bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
         name='clock_bridge',
         output='screen',
         arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'],
+        remappings=[('/clock', '/clock_raw')],
     )
     ld.add_action(clock_bridge)
 
-    # Add GZ model path to env
-    ld.add_action(AppendEnvironmentVariable(
-        'GZ_SIM_RESOURCE_PATH',
-        os.path.join(tb3_multi_dir, 'models'))
+    clock_throttle = Node(
+        package='topic_tools',
+        executable='throttle',
+        name='clock_throttle',
+        output='screen',
+        arguments=['messages', '/clock_raw', clock_rate, '/clock'],
+        parameters=[{
+            'use_sim_time': False,
+            'use_wall_clock': True,
+        }],
     )
+    ld.add_action(clock_throttle)
 
     return ld

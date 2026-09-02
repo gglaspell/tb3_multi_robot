@@ -1,3 +1,192 @@
+# tb3_multi_robot — follow branch
+
+This branch runs a two-robot ROS 2 Jazzy / Gazebo Harmonic scenario. `tb1`
+builds a map with SLAM Toolbox, explores it with `auto_mapper`, and leads `tb3`,
+which receives dynamically generated trailing goals.
+
+## Quick start with Docker
+
+Run these commands from the repository root. The sibling `../auto_mapper`
+checkout is supplied by the parent workspace submodule configuration. The
+image is built from both local checkouts, so uncommitted source changes are
+included.
+
+Headless (the easiest smoke-test path):
+
+```bash
+TB3_GUI=false TB3_RVIZ=false \
+  docker compose -f docker/docker-compose.yaml up --build
+```
+
+With both RViz windows on a Linux X11 desktop (Gazebo remains headless):
+
+```bash
+xhost +local:docker
+docker compose -f docker/docker-compose.yaml up --build
+```
+
+Add `TB3_GUI=true` to open the Gazebo client as well.
+
+Revoke the temporary X11 permission when finished:
+
+```bash
+xhost -local:docker
+```
+
+The combined launch defaults to ROS domain 73 so the Jazzy simulation does not
+collide with another ROS graph on the host. Override that domain when needed:
+
+```bash
+TB3_ROS_DOMAIN_ID=74 docker compose -f docker/docker-compose.yaml up
+```
+
+Gazebo retains its 1 kHz / 1 ms physics integration for contact and motion
+accuracy. The native clock is available as `/clock_raw`; `/clock` caps
+exact-sample forwarding at 250 Hz by default, preventing every Nav2 node from
+processing every physics tick. Override the fan-out rate without changing the
+physics rate:
+
+```bash
+TB3_CLOCK_RATE=500 docker compose -f docker/docker-compose.yaml up
+```
+
+The Docker healthcheck is backed by a persistent odometry-freshness monitor.
+It detects stale robot simulation continuously without repeatedly starting ROS
+CLI processes and new DDS participants.
+
+Both RViz views retain all configured displays while rendering at 10 FPS. On
+hosts without a container-accessible GPU, Mesa is limited to two render threads
+per RViz process. Override that limit when more rendering capacity is useful:
+
+```bash
+TB3_RVIZ_RENDER_THREADS=4 docker compose -f docker/docker-compose.yaml up
+```
+
+Useful commands:
+
+```bash
+# Start in the background
+TB3_GUI=false TB3_RVIZ=false \
+  docker compose -f docker/docker-compose.yaml up -d
+
+# Inspect service state and logs
+docker compose -f docker/docker-compose.yaml ps
+docker compose -f docker/docker-compose.yaml logs -f simulation
+
+# Open a ROS-aware shell in the all-in-one container
+docker compose -f docker/docker-compose.yaml exec simulation bash
+
+# Optional: run the original split-container diagnostic layout
+docker compose -f docker/docker-compose.yaml --profile split up gazebo nav
+
+# Stop and remove the scenario containers
+docker compose -f docker/docker-compose.yaml down
+```
+
+The default AMCL poses match the spawn locations in `config/robots.yaml`:
+`tb1=(-1.5, -0.5)` and `tb3=(1.5, -0.5)`. If those spawn positions change,
+update the `amcl.ros__parameters.initial_pose` values in the two burger Nav2
+parameter files as well.
+
+## Native Jazzy workspace
+
+From the root of a ROS 2 Jazzy workspace containing this repository under
+`src/tb3_multi_robot`:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+rosdep install --from-paths src/tb3_multi_robot src/auto_mapper \
+  --ignore-src --rosdistro jazzy -r -y
+colcon build --packages-select auto_mapper tb3_multi_robot --symlink-install
+source install/setup.bash
+ros2 launch tb3_multi_robot follow_sim.launch.py gui:=false
+```
+
+That single launch file defaults to isolated ROS domain `73` and starts the
+world, both robots, the clock bridge, both Nav2 stacks, follower control, and
+both RViz views. It accepts `ros_domain_id:=74`, `gui:=true`, `rviz:=false`,
+`rviz_render_threads:=4`, `clock_rate:=500`, `follow_distance:=0.8`, and
+`publish_rate:=1.5` overrides. Set `use_ground_truth_pose:=false` to make the
+follower consume the leader's localized pose instead of the simulation-only
+truth channel. That truth channel reports Gazebo's shared world coordinates
+directly, keeping the follower aligned even when wheel slip shifts the
+leader's evolving SLAM frame. The leader's map is still built solely from its
+simulated lidar and wheel odometry. The world and navigation launch files
+remain available separately for diagnostics.
+
+Select a bundled world with the same entry point. Its matching occupancy map
+is selected automatically. `open_arena`, `corridor`, and `obstacle_course`
+are generated from the same geometry definitions as their Nav2 maps, avoiding
+world/map drift:
+
+```bash
+ros2 launch tb3_multi_robot follow_sim.launch.py world:=open_arena gui:=false
+ros2 launch tb3_multi_robot follow_sim.launch.py world:=corridor gui:=false
+ros2 launch tb3_multi_robot follow_sim.launch.py world:=obstacle_course gui:=false
+```
+
+Regenerate those three paired world/map assets after editing their primitives:
+
+```bash
+python3 tools/generate_test_worlds.py
+```
+
+## Automatic mapping and leader control
+
+Automatic mapping is enabled by default. SLAM Toolbox publishes `/tb1/map`,
+and `auto_mapper` selects reachable frontiers and sends goals to
+`/tb1/navigate_to_pose`. It periodically snapshots the generated map at
+`map_output_path` (default `/tmp/tb1_map`). RViz shows the live map and frontier
+markers. The mapping profile consumes every update from the 10 Hz lidar stream
+with 0.05 m / 0.05 rad scan-insertion thresholds and publishes map updates once
+per second. It
+qualifies scan-edge frontiers with two adjacent free cells, which keeps curved
+laser boundaries connected instead of ending exploration on fragmented edges.
+Because the Burger lidar covers 360 degrees, the mapping profile accepts any
+terminal yaw once a frontier position is reached, avoiding no-value rotations.
+Override this with `auto_mapper_min_free_neighbors:=N` if a noisier sensor needs
+stricter filtering.
+
+In simulation, tb1 navigation and SLAM default to Gazebo's independent
+world-pose odometry on `/tb1/odom`, preventing wheel-integration drift from
+warping long mapping runs. In this mode, SLAM Toolbox rasterizes against that
+pose source without applying redundant scan-matching or loop corrections. The
+original realistic stream is retained on
+`/tb1/wheel_odom` for testing and comparison. Set
+`mapping_use_ground_truth_odom:=false` (or
+`TB3_MAPPING_GROUND_TRUTH_ODOM=false` with Compose) to make `/tb1/odom` use the
+wheel-integrated source again. Separately, the follower consumes a slip-free
+Gazebo pose in shared world coordinates so `tb3`'s static map stays aligned.
+
+Pause automatic exploration before sending a manual leader goal:
+
+```bash
+ros2 service call /tb1/auto_mapper/set_enabled std_srvs/srv/SetBool \
+  '{data: false}'
+```
+
+Send a Nav2 goal to `tb1` from its RViz window, or from the navigation
+container. Start the launch with `auto_map:=false` to use the supplied static
+map and AMCL instead:
+
+```bash
+ros2 action send_goal /tb1/navigate_to_pose nav2_msgs/action/NavigateToPose \
+  '{pose: {header: {frame_id: map}, pose: {position: {x: -0.5, y: -0.5}, orientation: {w: 1.0}}}}'
+```
+
+As the leader moves, `tb3_follow_tb1` sends trailing `NavigateToPose` goals to
+`/tb3/navigate_to_pose`.
+
+To copy the latest automatically saved map out of Docker:
+
+```bash
+docker cp tb3_sim:/tmp/tb1_map.yaml .
+docker cp tb3_sim:/tmp/tb1_map.pgm .
+```
+
+<details>
+<summary>Legacy branch and upstream documentation</summary>
+
 # Modifications
 
 ## TB3 Follow Mode — tb3 Follows tb1
@@ -601,3 +790,5 @@ Such remapping is also necessary in other components (e.g., Nav2) that instantia
 # 📎 Note on Included Files
 
 Some of configuration and model files (e.g., from turtlebot3 and nav2) have been directly copied into this repository. These were modified to better suit the multi-robot simulation and to ensure long-term consistency and reproducibility—even if the original upstream repositories evolve or change in the future. All original credit for these files remains with their respective authors and maintainers.
+
+</details>
