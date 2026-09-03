@@ -19,27 +19,39 @@
 import os
 import re
 import tempfile
+import math
 
 import yaml
 
 
 def create_namespaced_bridge_yaml(
-    base_yaml_path, namespace, use_ground_truth_odom=False
+    base_yaml_path, namespace, use_ground_truth_odom=False,
+    filter_scans=False,
 ):
-    """Create a namespaced bridge YAML with selectable primary odometry."""
+    """Create a namespaced bridge YAML with selectable odometry and scans."""
     with open(base_yaml_path, 'r') as f:
         bridges = yaml.safe_load(f)
 
     # Keep wheel-integrated odometry available for realism and diagnostics. In
     # the simulation-accuracy profile, Gazebo's independent world-pose
-    # OdometryPublisher becomes the primary odom/TF source used by Nav2 and
-    # SLAM, while the original stream moves to wheel_odom.
+    # OdometryPublisher is consumed by planar_odom, while the original stream
+    # moves to wheel_odom.  The adapter is deliberately the sole primary
+    # odom/TF source: Gazebo can include small roll and pitch values in its
+    # "2D" odometry output when a robot settles on the ground.  Feeding that
+    # non-planar transform to a 2D lidar SLAM stack lets the tilted scan plane
+    # appear as a yaw/map-registration error during turns.
     configured_bridges = []
     for bridge in bridges:
+        bridge = dict(bridge)
         if use_ground_truth_odom and bridge['ros_topic_name'] == 'tf':
             continue
         if use_ground_truth_odom and bridge['ros_topic_name'] == 'odom':
             bridge['ros_topic_name'] = 'wheel_odom'
+        # Preserve the acquisition timestamp on the raw scan, then let
+        # scan_tf_gate verify its historical transform before publishing the
+        # normal scan topic consumed by SLAM and Nav2.
+        if filter_scans and bridge['ros_topic_name'] == 'scan':
+            bridge['ros_topic_name'] = 'scan_raw'
         configured_bridges.append(bridge)
 
     ground_truth_odom = {
@@ -50,21 +62,6 @@ def create_namespaced_bridge_yaml(
         'direction': 'GZ_TO_ROS',
     }
     configured_bridges.append(ground_truth_odom)
-
-    if use_ground_truth_odom:
-        configured_bridges.extend([
-            {
-                **ground_truth_odom,
-                'ros_topic_name': 'odom',
-            },
-            {
-                'ros_topic_name': 'tf',
-                'gz_topic_name': 'ground_truth_tf',
-                'ros_type_name': 'tf2_msgs/msg/TFMessage',
-                'gz_type_name': 'gz.msgs.Pose_V',
-                'direction': 'GZ_TO_ROS',
-            },
-        ])
 
     if namespace and not namespace.endswith('/'):
         namespace_with_slash = namespace + '/'
@@ -181,6 +178,26 @@ def load_sdf_with_namespace(model_path, namespace, color=None):
     )
 
     return sdf_text
+
+
+def yaw_from_quaternion(x, y, z, w):
+    """Return the planar yaw component of a quaternion.
+
+    Gazebo ground-truth odometry may include a small roll or pitch caused by
+    contact dynamics.  This extracts only the heading needed by the 2D mapping
+    profile without assuming those other components are zero.
+    """
+    return math.atan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
+    )
+
+
+def planar_quaternion(x, y, z, w):
+    """Return a yaw-only quaternion for an arbitrary source orientation."""
+    yaw = yaw_from_quaternion(x, y, z, w)
+    half_yaw = yaw / 2.0
+    return 0.0, 0.0, math.sin(half_yaw), math.cos(half_yaw)
 
 
 def generate_rviz_config(robot_name, base_config_path, map_topic='/map'):
@@ -319,6 +336,11 @@ def _mapping_slam_parameters(
         'minimum_travel_heading': 0.05,
         'odom_frame': 'odom',
         'scan_topic': f'/{robot_name}/scan',
+        # GPU lidar scans can reach ROS roughly a scan period after capture.
+        # Wait for the transform at the scan timestamp rather than accepting
+        # a newer "latest" pose with accumulated yaw.
+        'transform_timeout': 0.35,
+        'tf_buffer_duration': 30.0,
         'transform_publish_period': 0.02,
         'use_map_saver': True,
         'use_scan_matching': use_scan_matching,

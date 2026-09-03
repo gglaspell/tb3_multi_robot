@@ -1,7 +1,7 @@
 Panels:
   - Class: rviz_common/Displays
     Help Height: 0
-    Name: Displays (tb3)
+    Name: Displays (<ROBOT_NAME>)
     Property Tree Widget:
       Expanded:
         - /Global Options1
@@ -199,13 +199,13 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /map
+        Value: <MAP_TOPIC>
       Update Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /map_updates
+        Value: <MAP_TOPIC>_updates
       Use Timestamp: false
       Value: true
     - Alpha: 1

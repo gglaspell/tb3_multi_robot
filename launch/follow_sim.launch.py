@@ -53,6 +53,7 @@ def generate_launch_description():
         launch_arguments={
             'use_sim_time': use_sim_time,
             'gui': gui,
+            'software_rendering': LaunchConfiguration('software_rendering'),
             'clock_rate': clock_rate,
             'world': world_name,
             'mapping_use_ground_truth_odom': LaunchConfiguration(
@@ -118,6 +119,13 @@ def generate_launch_description():
             description='Start the Gazebo graphical client',
         ),
         DeclareLaunchArgument(
+            'software_rendering',
+            default_value=EnvironmentVariable(
+                'TB3_SOFTWARE_RENDERING', default_value='false'
+            ),
+            description='Force Mesa software rendering instead of GPU use',
+        ),
+        DeclareLaunchArgument(
             'clock_rate', default_value='250.0',
             description='Maximum ROS /clock publication rate in Hz',
         ),
@@ -128,7 +136,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'rviz_render_threads',
             default_value=EnvironmentVariable(
-                'LP_NUM_THREADS', default_value='2'
+                'LP_NUM_THREADS', default_value='8'
             ),
             description='Mesa software-rendering threads per RViz process',
         ),

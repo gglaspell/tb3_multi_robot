@@ -56,7 +56,6 @@ from launch_ros.parameter_descriptions import ParameterValue
 from multi_robot_scripts.utils import (
     generate_mapping_nav2_params,
     generate_mapping_slam_params,
-    generate_rviz_config,
 )
 
 
@@ -98,7 +97,12 @@ def generate_launch_description():
     default_map = os.path.join(pkg_dir, 'map', 'map.yaml')
     params_tb1 = os.path.join(pkg_dir, 'params', f'{tb3_model}_nav2_params.yaml')
     params_tb3 = os.path.join(pkg_dir, 'params', f'{tb3_model}_nav2_params_tb3.yaml')
-    rviz_template = os.path.join(pkg_dir, 'rviz', 'tb3_navigation2.rviz')
+    rviz_tb1_config = os.path.join(
+        pkg_dir, 'rviz', 'tb1_navigation2.rviz'
+    )
+    rviz_tb3_config = os.path.join(
+        pkg_dir, 'rviz', 'tb3_navigation2.rviz'
+    )
     slam_config = os.path.join(
         get_package_share_directory('slam_toolbox'),
         'config',
@@ -143,10 +147,10 @@ def generate_launch_description():
         description='Start one RViz instance for each robot',
     ))
     ld.add_action(DeclareLaunchArgument(
-        'rviz_render_threads',
-        default_value=EnvironmentVariable(
-            'LP_NUM_THREADS', default_value='2'
-        ),
+            'rviz_render_threads',
+            default_value=EnvironmentVariable(
+                'LP_NUM_THREADS', default_value='8'
+            ),
         description='Mesa software-rendering threads per RViz process',
     ))
     ld.add_action(DeclareLaunchArgument(
@@ -310,9 +314,7 @@ def generate_launch_description():
         namespace='/tb1',
         arguments=[
             '-d',
-            generate_rviz_config(
-                'tb1', rviz_template, map_topic='/tb1/map'
-            ),
+            rviz_tb1_config,
         ],
         parameters=[{'use_sim_time': use_sim_time, 'log_level': 'warn'}],
         remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static')],
@@ -389,7 +391,7 @@ def generate_launch_description():
         namespace='/tb3',
         arguments=[
             '-d',
-            generate_rviz_config('tb3', rviz_template, map_topic='/map'),
+            rviz_tb3_config,
         ],
         parameters=[{'use_sim_time': use_sim_time, 'log_level': 'warn'}],
         remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static')],

@@ -41,6 +41,7 @@ def generate_launch_description():
         launch_arguments={
             'use_sim_time': use_sim_time,
             'gui': LaunchConfiguration('gui'),
+            'software_rendering': LaunchConfiguration('software_rendering'),
             'clock_rate': LaunchConfiguration('clock_rate'),
             'world': world_name,
             'robot_config': robot_config_arg,
@@ -105,6 +106,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('gui', default_value='true'),
+        DeclareLaunchArgument(
+            'software_rendering',
+            default_value=EnvironmentVariable(
+                'TB3_SOFTWARE_RENDERING', default_value='false'
+            ),
+        ),
         DeclareLaunchArgument('clock_rate', default_value='250.0'),
         DeclareLaunchArgument(
             'robot_config',
@@ -124,7 +131,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'rviz_render_threads',
             default_value=EnvironmentVariable(
-                'LP_NUM_THREADS', default_value='2'
+                'LP_NUM_THREADS', default_value='8'
             ),
         ),
         DeclareLaunchArgument('red_linear_speed', default_value='0.22'),

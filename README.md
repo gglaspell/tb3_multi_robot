@@ -54,12 +54,17 @@ The Docker healthcheck is backed by a persistent odometry-freshness monitor.
 It detects stale robot simulation continuously without repeatedly starting ROS
 CLI processes and new DDS participants.
 
-Both RViz views retain all configured displays while rendering at 10 FPS. On
-hosts without a container-accessible GPU, Mesa is limited to two render threads
-per RViz process. Override that limit when more rendering capacity is useful:
+The tracked `rviz/tb1_navigation2.rviz` and `rviz/tb3_navigation2.rviz` follow
+profiles retain all configured displays while rendering at 30 FPS. The generic
+`rviz/navigation2_template.rviz` remains available for dynamically named
+robots. Compose requests the host NVIDIA GPU with OpenGL, X11 display, compute,
+and utility capabilities for every rendering service. Confirm it from the
+container with `nvidia-smi`. Set `TB3_SOFTWARE_RENDERING=true` to force the
+Mesa fallback; it defaults to eight render threads per RViz process and can be
+tuned when more or less CPU rendering capacity is useful:
 
 ```bash
-TB3_RVIZ_RENDER_THREADS=4 docker compose -f docker/docker-compose.yaml up
+TB3_RVIZ_RENDER_THREADS=16 docker compose -f docker/docker-compose.yaml up
 ```
 
 Useful commands:
@@ -193,11 +198,19 @@ terminal yaw once a frontier position is reached, avoiding no-value rotations.
 Override this with `auto_mapper_min_free_neighbors:=N` if a noisier sensor needs
 stricter filtering.
 
+Before SLAM receives tb1's lidar, `scan_tf_gate` verifies that the
+`odom -> base_footprint` transform is available at the scan's acquisition
+timestamp. Scans older than 0.35 s or without that historical transform are
+dropped rather than being rasterized against a newer yaw. The mapping profile
+keeps 30 seconds of TF history and waits up to 0.35 s for a transform.
+
 In simulation, tb1 navigation and SLAM default to Gazebo's independent
 world-pose odometry on `/tb1/odom`, preventing wheel-integration drift from
-warping long mapping runs. In this mode, SLAM Toolbox rasterizes against that
-pose source without applying redundant scan-matching or loop corrections. The
-original realistic stream is retained on
+warping long mapping runs. A yaw-only adapter removes any contact-induced
+roll and pitch from Gazebo before this 2D lidar stack consumes the odometry
+and `odom -> base_footprint` TF. In this mode, SLAM Toolbox rasterizes against
+that planar pose source without applying redundant scan-matching or loop
+corrections. The original realistic stream is retained on
 `/tb1/wheel_odom` for testing and comparison. Set
 `mapping_use_ground_truth_odom:=false` (or
 `TB3_MAPPING_GROUND_TRUTH_ODOM=false` with Compose) to make `/tb1/odom` use the

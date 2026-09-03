@@ -33,7 +33,9 @@ def generate_launch_description():
     # ───── Set up paths and environment ────────────────────────────────────────
     tb3_multi_dir = get_package_share_directory('tb3_multi_robot')
     robot_config_path = os.path.join(tb3_multi_dir, 'config', 'robots.yaml')
-    rviz_template_path = os.path.join(tb3_multi_dir, 'rviz', 'tb3_navigation2.rviz')
+    rviz_template_path = os.path.join(
+        tb3_multi_dir, 'rviz', 'navigation2_template.rviz'
+    )
     default_map_path = os.path.join(tb3_multi_dir, 'map', 'map.yaml')
 
     tb3_model = os.environ.get('TURTLEBOT3_MODEL', 'burger')

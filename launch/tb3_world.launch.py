@@ -28,7 +28,11 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    EnvironmentVariable,
+    LaunchConfiguration,
+    PathJoinSubstitution,
+)
 
 from launch_ros.actions import Node
 
@@ -105,10 +109,12 @@ def _robot_actions(context, tb3_multi_dir):
         )
         if namespace == 'tb1':
             wheel_bridge = create_namespaced_bridge_yaml(
-                bridge_template, namespace, use_ground_truth_odom=False
+                bridge_template, namespace, use_ground_truth_odom=False,
+                filter_scans=True,
             )
             truth_bridge = create_namespaced_bridge_yaml(
-                bridge_template, namespace, use_ground_truth_odom=True
+                bridge_template, namespace, use_ground_truth_odom=True,
+                filter_scans=True,
             )
             actions.extend([
                 Node(
@@ -131,7 +137,46 @@ def _robot_actions(context, tb3_multi_dir):
                     output='screen',
                     condition=UnlessCondition(mapping_use_ground_truth_odom),
                 ),
+                # Gazebo's 2D OdometryPublisher can retain a small contact
+                # roll/pitch.  Flatten it before the 2D SLAM/Nav2 stack uses
+                # the primary odom and odom -> base_footprint transform.
+                Node(
+                    package='tb3_multi_robot',
+                    executable='planar_odom',
+                    name='planar_odom',
+                    namespace=namespace,
+                    remappings=[('/tf', f'/{namespace}/tf')],
+                    output='screen',
+                    parameters=[{
+                        'use_sim_time': use_sim_time,
+                        'input_topic': 'ground_truth_odom',
+                        'odom_topic': 'odom',
+                    }],
+                    condition=IfCondition(mapping_use_ground_truth_odom),
+                ),
             ])
+            # The bridge preserves the LaserScan acquisition timestamp, but a
+            # scan can reach ROS well after current TF.  Publish it on the
+            # normal topic only when its historical transform is available.
+            actions.append(Node(
+                package='tb3_multi_robot',
+                executable='scan_tf_gate',
+                name='scan_tf_gate',
+                namespace=namespace,
+                remappings=[
+                    ('/tf', f'/{namespace}/tf'),
+                    ('/tf_static', f'/{namespace}/tf_static'),
+                ],
+                output='screen',
+                parameters=[{
+                    'use_sim_time': use_sim_time,
+                    'raw_scan_topic': 'scan_raw',
+                    'scan_topic': 'scan',
+                    'max_scan_age_sec': 0.35,
+                    'transform_timeout_sec': 0.35,
+                    'tf_buffer_duration_sec': 30.0,
+                }],
+            ))
         else:
             namespaced_bridge = create_namespaced_bridge_yaml(
                 bridge_template, namespace
@@ -182,6 +227,7 @@ def generate_launch_description():
 
     # Simulation config
     gui = LaunchConfiguration('gui')
+    software_rendering = LaunchConfiguration('software_rendering')
     clock_rate = LaunchConfiguration('clock_rate')
     world_name = LaunchConfiguration('world')
     world_path = PathJoinSubstitution([
@@ -232,6 +278,13 @@ def generate_launch_description():
         description='Start the Gazebo graphical client',
     ))
     ld.add_action(DeclareLaunchArgument(
+        'software_rendering',
+        default_value=EnvironmentVariable(
+            'TB3_SOFTWARE_RENDERING', default_value='false'
+        ),
+        description='Force Mesa software rendering instead of GPU rendering',
+    ))
+    ld.add_action(DeclareLaunchArgument(
         'world',
         default_value='tb3_world',
         description=(
@@ -273,10 +326,11 @@ def generate_launch_description():
         'GZ_SIM_RESOURCE_PATH',
         os.path.join(turtlebot3_gazebo_dir, 'models'),
     ))
-    # Software EGL makes GPU-lidar rendering deterministic in headless
-    # containers that do not have the host NVIDIA userspace driver mounted.
+    # Keep the Mesa path available for hosts without GPU passthrough, but do
+    # not force it for ordinary headless GPU rendering.
     ld.add_action(SetEnvironmentVariable(
-        'LIBGL_ALWAYS_SOFTWARE', '1', condition=UnlessCondition(gui),
+        'LIBGL_ALWAYS_SOFTWARE', '1',
+        condition=IfCondition(software_rendering),
     ))
     ld.add_action(gzserver_cmd)
     ld.add_action(gzserver_headless_cmd)

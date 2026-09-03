@@ -1,6 +1,7 @@
 """Regression tests for the generated namespaced mapping profile."""
 
 from pathlib import Path
+import math
 
 from multi_robot_scripts import utils
 
@@ -81,6 +82,8 @@ def test_mapping_profile_is_tuned_and_namespaced(
     assert namespaced['minimum_travel_distance'] == pytest.approx(0.05)
     assert namespaced['minimum_travel_heading'] == pytest.approx(0.05)
     assert namespaced['scan_topic'] == '/tb1/scan'
+    assert namespaced['transform_timeout'] == pytest.approx(0.35)
+    assert namespaced['tf_buffer_duration'] == pytest.approx(30.0)
     assert namespaced['use_scan_matching'] is True
     truth_namespaced = truth_slam_config[
         '/tb1/slam_toolbox'
@@ -112,13 +115,20 @@ def _write_bridge_input(path: Path) -> Path:
                 'gz_type_name': 'gz.msgs.Pose_V',
                 'direction': 'GZ_TO_ROS',
             },
+            {
+                'ros_topic_name': 'scan',
+                'gz_topic_name': 'scan',
+                'ros_type_name': 'sensor_msgs/msg/LaserScan',
+                'gz_type_name': 'gz.msgs.LaserScan',
+                'direction': 'GZ_TO_ROS',
+            },
         ]),
         encoding='utf-8',
     )
     return path
 
 
-def test_truth_bridge_retains_wheel_odom_and_replaces_primary_tf(
+def test_truth_bridge_retains_wheel_odom_without_bypassing_planar_adapter(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -135,9 +145,42 @@ def test_truth_bridge_retains_wheel_odom_and_replaces_primary_tf(
     }
 
     assert topics['tb1/wheel_odom'] == 'tb1/odom'
-    assert topics['tb1/odom'] == 'tb1/ground_truth_odom'
     assert topics['tb1/ground_truth_odom'] == 'tb1/ground_truth_odom'
-    assert topics['tb1/tf'] == 'tb1/ground_truth_tf'
+    assert 'tb1/odom' not in topics
+    assert 'tb1/tf' not in topics
+
+
+def test_planar_quaternion_discards_roll_and_pitch_without_changing_yaw() -> None:
+    # 0.7 degrees of pitch is representative of the contact-induced tilt
+    # measured in Gazebo's supposedly 2D ground-truth odometry stream.
+    roll = math.radians(0.3)
+    pitch = math.radians(-0.7)
+    yaw = math.radians(-98.969)
+    cr, sr = math.cos(roll / 2.0), math.sin(roll / 2.0)
+    cp, sp = math.cos(pitch / 2.0), math.sin(pitch / 2.0)
+    cy, sy = math.cos(yaw / 2.0), math.sin(yaw / 2.0)
+    source = (
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+        cr * cp * cy + sr * sp * sy,
+    )
+
+    qx, qy, qz, qw = utils.planar_quaternion(*source)
+
+    assert (qx, qy) == pytest.approx((0.0, 0.0))
+    assert utils.yaw_from_quaternion(qx, qy, qz, qw) == pytest.approx(yaw)
+
+
+def test_truth_mapping_launch_uses_the_planar_odom_adapter() -> None:
+    launch = (
+        Path(__file__).resolve().parents[1] / 'launch' / 'tb3_world.launch.py'
+    ).read_text(encoding='utf-8')
+
+    assert "executable='planar_odom'" in launch
+    assert "'input_topic': 'ground_truth_odom'" in launch
+    assert "'odom_topic': 'odom'" in launch
+    assert "('/tf', f'/{namespace}/tf')" in launch
 
 
 def test_wheel_bridge_keeps_original_odom_and_tf(
@@ -160,3 +203,85 @@ def test_wheel_bridge_keeps_original_odom_and_tf(
     assert topics['tb1/tf'] == 'tb1/tf'
     assert topics['tb1/ground_truth_odom'] == 'tb1/ground_truth_odom'
     assert 'tb1/wheel_odom' not in topics
+
+
+def test_mapping_scan_bridge_routes_tb1_through_the_timestamp_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(utils.tempfile, 'gettempdir', lambda: str(tmp_path))
+    bridge_input = _write_bridge_input(tmp_path / 'bridge.yaml')
+
+    output = utils.create_namespaced_bridge_yaml(
+        str(bridge_input), 'tb1', filter_scans=True
+    )
+    bridges = yaml.safe_load(Path(output).read_text(encoding='utf-8'))
+    topics = {
+        bridge['ros_topic_name']: bridge['gz_topic_name']
+        for bridge in bridges
+    }
+
+    assert topics['tb1/scan_raw'] == 'tb1/scan'
+    assert 'tb1/scan' not in topics
+
+
+def test_burger_wheel_odometry_rate_matches_mapping_pose_budget() -> None:
+    model_path = (
+        Path(__file__).resolve().parents[1]
+        / 'models'
+        / 'turtlebot3_burger'
+        / 'model.sdf'
+    )
+
+    model = model_path.read_text(encoding='utf-8')
+
+    assert '<odom_publisher_frequency>20</odom_publisher_frequency>' in model
+
+
+def test_follow_rviz_profiles_are_tracked_and_render_at_30_fps() -> None:
+    rviz_dir = Path(__file__).resolve().parents[1] / 'rviz'
+    expected_maps = {
+        'tb1_navigation2.rviz': '/tb1/map',
+        'tb3_navigation2.rviz': '/map',
+    }
+
+    for filename, map_topic in expected_maps.items():
+        profile = (rviz_dir / filename).read_text(encoding='utf-8')
+        assert '<ROBOT_NAME>' not in profile
+        assert '<MAP_TOPIC>' not in profile
+        assert 'Frame Rate: 30' in profile
+        assert f'Value: {map_topic}' in profile
+
+    template = (rviz_dir / 'navigation2_template.rviz').read_text(
+        encoding='utf-8'
+    )
+    assert '<ROBOT_NAME>' in template
+    assert '<MAP_TOPIC>' in template
+    assert 'Frame Rate: 30' in template
+
+
+def test_rviz_software_rendering_defaults_to_eight_threads() -> None:
+    package_root = Path(__file__).resolve().parents[1]
+    compose = (package_root / 'docker' / 'docker-compose.yaml').read_text(
+        encoding='utf-8'
+    )
+    assert compose.count('TB3_RVIZ_RENDER_THREADS:-8') == 6
+    assert compose.count('gpus: all') == 4
+    assert compose.count('NVIDIA_DRIVER_CAPABILITIES:') == 4
+
+    for launch_name in (
+        'follow_sim.launch.py',
+        'follow_tb3.launch.py',
+        'chase_tag.launch.py',
+        'chase_tag_nav.launch.py',
+    ):
+        launch = (package_root / 'launch' / launch_name).read_text(
+            encoding='utf-8'
+        )
+        assert "'LP_NUM_THREADS', default_value='8'" in launch
+
+    world_launch = (package_root / 'launch' / 'tb3_world.launch.py').read_text(
+        encoding='utf-8'
+    )
+    assert "'TB3_SOFTWARE_RENDERING', default_value='false'" in world_launch
+    assert "condition=IfCondition(software_rendering)" in world_launch

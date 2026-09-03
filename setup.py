@@ -54,6 +54,8 @@ setup(
             'chase_tag = multi_robot_scripts.chase_tag:main',
             'tb3_follow_tb1 = multi_robot_scripts.tb3_follow_tb1:main',
             'tf_pose_publisher = multi_robot_scripts.tf_pose_publisher:main',
+            'scan_tf_gate = multi_robot_scripts.scan_tf_gate:main',
+            'planar_odom = multi_robot_scripts.planar_odom:main',
             (
                 'simulation_health_monitor = '
                 'multi_robot_scripts.simulation_health_monitor:main'

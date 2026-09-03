@@ -230,7 +230,7 @@ def _game_actions(context, package_dir):
     log_level = LaunchConfiguration('log_level')
     rviz = LaunchConfiguration('rviz')
     rviz_template = os.path.join(
-        package_dir, 'rviz', 'tb3_navigation2.rviz'
+        package_dir, 'rviz', 'navigation2_template.rviz'
     )
 
     actions = []
@@ -339,7 +339,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'rviz_render_threads',
             default_value=EnvironmentVariable(
-                'LP_NUM_THREADS', default_value='2'
+                'LP_NUM_THREADS', default_value='8'
             ),
         ),
         DeclareLaunchArgument('red_linear_speed', default_value='0.22'),
