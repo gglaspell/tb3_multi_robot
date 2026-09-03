@@ -77,6 +77,47 @@ services:
       start_period: 5s
     restart: on-failure
 
+  # ── Three Nav2 stacks: two red chasers versus one blue runner ──────────────
+  chase-tag:
+    profiles: [tag]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      additional_contexts:
+        auto_mapper: ../../auto_mapper
+    image: tb3_multi_robot:latest
+    container_name: tb3_chase_tag
+    environment:
+      <<: *common-env
+      ROS_DOMAIN_ID: ${TB3_ROS_DOMAIN_ID:-74}
+      LP_NUM_THREADS: ${TB3_RVIZ_RENDER_THREADS:-2}
+    volumes: *common-volumes
+    network_mode: host
+    command: >
+      ros2 launch tb3_multi_robot chase_tag.launch.py
+      ros_domain_id:=${TB3_ROS_DOMAIN_ID:-74}
+      world:=${TB3_WORLD:-open_arena}
+      gui:=${TB3_GUI:-true}
+      rviz:=${TB3_RVIZ:-false}
+      rviz_render_threads:=${TB3_RVIZ_RENDER_THREADS:-2}
+      clock_rate:=${TB3_CLOCK_RATE:-250.0}
+      red_linear_speed:=${TB3_RED_SPEED:-0.22}
+      blue_linear_speed:=${TB3_BLUE_SPEED:-0.16}
+      score_to_win:=${TB3_SCORE_TO_WIN:-0}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -f /tmp/tb3_multi_robot.ready &&
+          tb3_health_now=$$(date +%s) &&
+          tb3_health_updated=$$(stat -c %Y /tmp/tb3_multi_robot.ready) &&
+          [ $$((tb3_health_now - tb3_health_updated)) -le 3 ]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+      start_period: 5s
+    restart: on-failure
+
   # ── Gazebo: world + robot spawning ─────────────────────────────────────────
   gazebo:
     profiles: [split]

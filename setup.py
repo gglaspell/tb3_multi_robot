@@ -51,6 +51,7 @@ setup(
     entry_points={
         'console_scripts': [
             'turtlebot3_drive = multi_robot_scripts.turtlebot3_drive:main',
+            'chase_tag = multi_robot_scripts.chase_tag:main',
             'tb3_follow_tb1 = multi_robot_scripts.tb3_follow_tb1:main',
             'tf_pose_publisher = multi_robot_scripts.tf_pose_publisher:main',
             (

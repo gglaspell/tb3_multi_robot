@@ -15,6 +15,7 @@
   <buildtool_depend>ament_python</buildtool_depend>
 
   <!-- Runtime dependencies -->
+  <exec_depend>action_msgs</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>auto_mapper</exec_depend>
   <exec_depend>rclpy</exec_depend>
@@ -28,6 +29,7 @@
   <exec_depend>ros_gz_image</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>tf_transformations</exec_depend>
   <exec_depend>topic_tools</exec_depend>

@@ -4,7 +4,9 @@
     <RecoveryNode number_of_retries="6" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
-          <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}"/>
+          <GoalUpdater input_goal="{goal}" output_goal="{goal}">
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}"/>
+          </GoalUpdater>
         </RateController>
         <FollowPath path="{path}" controller_id="FollowPath" error_code_id="{follow_path_error_code}"/>
       </PipelineSequence>

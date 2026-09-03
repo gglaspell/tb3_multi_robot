@@ -17,6 +17,7 @@
 """Runtime configuration helpers for the multi-robot simulation."""
 
 import os
+import re
 import tempfile
 
 import yaml
@@ -92,8 +93,8 @@ def create_namespaced_bridge_yaml(
     return output_path
 
 
-def load_sdf_with_namespace(model_path, namespace):
-    """Patch SDF file to inject robot namespace into all relevant topic tags."""
+def load_sdf_with_namespace(model_path, namespace, color=None):
+    """Patch an SDF with namespaced topics and an optional base color."""
     with open(model_path, 'r') as f:
         sdf_text = f.read()
 
@@ -112,12 +113,51 @@ def load_sdf_with_namespace(model_path, namespace):
             f'<topic>{namespace}/camera/image_raw</topic>'
         ),
         '<camera_info_topic>camera/camera_info</camera_info_topic>': (
-            f'<camera_info_topic>{namespace}/camera/camera_info</camera_info_topic>'
+            f'<camera_info_topic>{namespace}/camera/camera_info'
+            '</camera_info_topic>'
         ),
     }
 
     for original, replacement in topic_map.items():
         sdf_text = sdf_text.replace(original, replacement)
+
+    if color is not None:
+        values = [float(component) for component in color]
+        if len(values) == 3:
+            values.append(1.0)
+        if len(values) != 4 or any(
+            component < 0.0 or component > 1.0 for component in values
+        ):
+            raise ValueError(
+                'Robot color must contain three or four values in [0, 1]'
+            )
+        rgba = ' '.join(f'{component:g}' for component in values)
+        visual_match = re.search(
+            r'<visual name="base_visual">.*?</visual>',
+            sdf_text,
+            flags=re.DOTALL,
+        )
+        if visual_match is None:
+            raise ValueError(f'No base_visual in {model_path}')
+        colored_visual = re.sub(
+            r'<ambient>.*?</ambient>',
+            f'<ambient>{rgba}</ambient>',
+            visual_match.group(0),
+            count=1,
+            flags=re.DOTALL,
+        )
+        colored_visual = re.sub(
+            r'<diffuse>.*?</diffuse>',
+            f'<diffuse>{rgba}</diffuse>',
+            colored_visual,
+            count=1,
+            flags=re.DOTALL,
+        )
+        sdf_text = (
+            sdf_text[:visual_match.start()]
+            + colored_visual
+            + sdf_text[visual_match.end():]
+        )
 
     ground_truth_plugin = f"""
     <plugin filename="gz-sim-odometry-publisher-system"
@@ -163,6 +203,97 @@ def generate_rviz_config(robot_name, base_config_path, map_topic='/map'):
         f.write(config)
 
     return output_config_path
+
+
+def _replace_namespace_tokens(value, robot_name):
+    """Recursively resolve the namespace placeholders in Nav2 parameters."""
+    if isinstance(value, dict):
+        return {
+            key: _replace_namespace_tokens(item, robot_name)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _replace_namespace_tokens(item, robot_name) for item in value
+        ]
+    if isinstance(value, str):
+        return value.replace('<robot_namespace>', f'/{robot_name}')
+    return value
+
+
+def generate_chase_nav2_params(
+    robot_name,
+    base_config_path,
+    initial_pose,
+    max_linear_speed,
+    behavior_tree_path=None,
+):
+    """Create one namespaced, speed-limited Nav2 profile for chase/tag."""
+    with open(base_config_path, 'r') as config_file:
+        config = yaml.safe_load(config_file)
+    config = _replace_namespace_tokens(config, robot_name)
+
+    x, y, yaw = (float(component) for component in initial_pose)
+    amcl = config['amcl']['ros__parameters']
+    amcl['set_initial_pose'] = True
+    amcl['initial_pose'].update({
+        'x': x,
+        'y': y,
+        'z': 0.0,
+        'yaw': yaw,
+    })
+    if behavior_tree_path is not None:
+        config['bt_navigator']['ros__parameters'][
+            'default_nav_to_pose_bt_xml'
+        ] = behavior_tree_path
+
+    controller = config['controller_server']['ros__parameters']['FollowPath']
+    controller.clear()
+    controller.update({
+        'plugin': (
+            'nav2_regulated_pure_pursuit_controller::'
+            'RegulatedPurePursuitController'
+        ),
+        'max_linear_vel': float(max_linear_speed),
+        'lookahead_dist': 0.4,
+        'min_lookahead_dist': 0.25,
+        'max_lookahead_dist': 0.8,
+        'lookahead_time': 1.0,
+        'use_velocity_scaled_lookahead_dist': True,
+        'min_approach_linear_velocity': 0.04,
+        'approach_velocity_scaling_dist': 0.6,
+        'use_regulated_linear_velocity_scaling': True,
+        'use_cost_regulated_linear_velocity_scaling': True,
+        'regulated_linear_scaling_min_radius': 0.9,
+        'regulated_linear_scaling_min_speed': 0.04,
+        'inflation_cost_scaling_factor': 5.0,
+        'use_collision_detection': True,
+        'max_allowed_time_to_collision_up_to_carrot': 1.0,
+        'use_rotate_to_heading': True,
+        'rotate_to_heading_angular_vel': 1.0,
+        'rotate_to_heading_min_angle': 0.785,
+        'max_angular_accel': 3.2,
+        'transform_tolerance': 0.2,
+    })
+    # Let the chasers get close enough for a tag while the obstacle critic and
+    # collision monitor still prevent physical contact.
+    config['local_costmap']['local_costmap']['ros__parameters'][
+        'inflation_layer'
+    ]['inflation_radius'] = 0.3
+    config['global_costmap']['global_costmap']['ros__parameters'][
+        'inflation_layer'
+    ]['inflation_radius'] = 0.3
+
+    smoother = config['velocity_smoother']['ros__parameters']
+    smoother['max_velocity'][0] = float(max_linear_speed)
+    smoother['min_velocity'][0] = -float(max_linear_speed)
+
+    output_path = os.path.join(
+        tempfile.gettempdir(), f'{robot_name}_chase_nav2_params.yaml'
+    )
+    with open(output_path, 'w') as config_file:
+        yaml.safe_dump(config, config_file, sort_keys=False)
+    return output_path
 
 
 def _mapping_slam_parameters(

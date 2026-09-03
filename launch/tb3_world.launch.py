@@ -17,23 +17,161 @@
 import os
 
 from ament_index_python.packages import get_package_share_directory
+
 from launch import LaunchDescription
 from launch.actions import (
     AppendEnvironmentVariable,
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    OpaqueFunction,
     SetEnvironmentVariable,
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+
 from launch_ros.actions import Node
 
 from multi_robot_scripts.utils import (
     create_namespaced_bridge_yaml,
     load_sdf_with_namespace,
 )
+
 import yaml
+
+
+def _robot_actions(context, tb3_multi_dir):
+    """Create robot processes after resolving the selected config file."""
+    robot_config_path = LaunchConfiguration('robot_config').perform(context)
+    with open(robot_config_path, 'r') as config_file:
+        config = yaml.safe_load(config_file)
+    robots = [
+        robot for robot in config['robots'] if robot.get('enabled', True)
+    ]
+
+    use_sim_time = LaunchConfiguration('use_sim_time')
+    mapping_use_ground_truth_odom = LaunchConfiguration(
+        'mapping_use_ground_truth_odom'
+    )
+    tb3_model = os.environ.get('TURTLEBOT3_MODEL', 'burger')
+    model_dir = f'turtlebot3_{tb3_model}'
+    remappings = [('/tf', 'tf'), ('/tf_static', 'tf_static')]
+    urdf_path = os.path.join(
+        tb3_multi_dir, 'urdf', f'turtlebot3_{tb3_model}.urdf'
+    )
+    with open(urdf_path, 'r') as urdf_file:
+        robot_description = urdf_file.read()
+
+    actions = []
+    for robot in robots:
+        namespace = robot['name']
+        sdf_path = os.path.join(
+            tb3_multi_dir, 'models', model_dir, 'model.sdf'
+        )
+        patched_sdf = load_sdf_with_namespace(
+            sdf_path, namespace, color=robot.get('color')
+        )
+        actions.append(Node(
+            package='robot_state_publisher',
+            executable='robot_state_publisher',
+            name='robot_state_publisher',
+            namespace=namespace,
+            remappings=remappings,
+            output='screen',
+            parameters=[{
+                'use_sim_time': use_sim_time,
+                'robot_description': robot_description,
+                # TF is isolated by topic namespace; frame IDs stay local.
+                'frame_prefix': '',
+            }],
+        ))
+        actions.append(Node(
+            package='ros_gz_sim',
+            executable='create',
+            namespace=namespace,
+            arguments=[
+                '-name', f'{namespace}_{tb3_model}',
+                '-string', patched_sdf,
+                '-x', str(robot['x_pose']),
+                '-y', str(robot['y_pose']),
+                '-z', str(robot.get('z_pose', 0.01)),
+                '-Y', str(robot.get('yaw_pose', 0.0)),
+            ],
+            output='screen',
+        ))
+
+        bridge_template = os.path.join(
+            tb3_multi_dir, 'params', f'{tb3_model}_bridge.yaml'
+        )
+        if namespace == 'tb1':
+            wheel_bridge = create_namespaced_bridge_yaml(
+                bridge_template, namespace, use_ground_truth_odom=False
+            )
+            truth_bridge = create_namespaced_bridge_yaml(
+                bridge_template, namespace, use_ground_truth_odom=True
+            )
+            actions.extend([
+                Node(
+                    package='ros_gz_bridge',
+                    executable='parameter_bridge',
+                    name=f'{namespace}_bridge',
+                    arguments=[
+                        '--ros-args', '-p', f'config_file:={truth_bridge}'
+                    ],
+                    output='screen',
+                    condition=IfCondition(mapping_use_ground_truth_odom),
+                ),
+                Node(
+                    package='ros_gz_bridge',
+                    executable='parameter_bridge',
+                    name=f'{namespace}_bridge',
+                    arguments=[
+                        '--ros-args', '-p', f'config_file:={wheel_bridge}'
+                    ],
+                    output='screen',
+                    condition=UnlessCondition(mapping_use_ground_truth_odom),
+                ),
+            ])
+        else:
+            namespaced_bridge = create_namespaced_bridge_yaml(
+                bridge_template, namespace
+            )
+            actions.append(Node(
+                package='ros_gz_bridge',
+                executable='parameter_bridge',
+                name=f'{namespace}_bridge',
+                arguments=[
+                    '--ros-args', '-p', f'config_file:={namespaced_bridge}'
+                ],
+                output='screen',
+            ))
+
+        if tb3_model != 'burger':
+            actions.append(Node(
+                package='ros_gz_image',
+                executable='image_bridge',
+                namespace=namespace,
+                arguments=[f'/{namespace}/camera/image_raw'],
+                output='screen',
+            ))
+
+    # Keep Docker readiness aligned with whichever robot set was selected.
+    actions.append(Node(
+        package='tb3_multi_robot',
+        executable='simulation_health_monitor',
+        name='simulation_health_monitor',
+        output='screen',
+        respawn=True,
+        respawn_delay=1.0,
+        parameters=[{
+            'use_sim_time': False,
+            'robot_names': [robot['name'] for robot in robots],
+            'odom_timeout': 2.0,
+            'heartbeat_period': 0.5,
+            'ready_file': '/tmp/tb3_multi_robot.ready',
+        }],
+    ))
+    return actions
 
 
 def generate_launch_description():
@@ -43,13 +181,9 @@ def generate_launch_description():
     turtlebot3_gazebo_dir = get_package_share_directory('turtlebot3_gazebo')
 
     # Simulation config
-    use_sim_time = LaunchConfiguration('use_sim_time')
     gui = LaunchConfiguration('gui')
     clock_rate = LaunchConfiguration('clock_rate')
     world_name = LaunchConfiguration('world')
-    mapping_use_ground_truth_odom = LaunchConfiguration(
-        'mapping_use_ground_truth_odom'
-    )
     world_path = PathJoinSubstitution([
         tb3_multi_dir,
         'worlds',
@@ -121,6 +255,13 @@ def generate_launch_description():
             'wheel-integrated odometry remains on /tb1/wheel_odom'
         ),
     ))
+    ld.add_action(DeclareLaunchArgument(
+        'robot_config',
+        default_value=os.path.join(
+            tb3_multi_dir, 'config', 'robots.yaml'
+        ),
+        description='Robot spawn/team configuration YAML',
+    ))
 
     # Set model search paths before Gazebo starts. The local package contains
     # the robot/world SDF files, while turtlebot3_gazebo supplies common meshes.
@@ -141,140 +282,9 @@ def generate_launch_description():
     ld.add_action(gzserver_headless_cmd)
     ld.add_action(gzclient_cmd)
 
-    # Load robot config
-    robot_config_path = os.path.join(tb3_multi_dir, 'config', 'robots.yaml')
-    with open(robot_config_path, 'r') as f:
-        config = yaml.safe_load(f)
-
-    robots = [r for r in config['robots'] if r.get('enabled', True)]
-    tb3_model = os.environ.get('TURTLEBOT3_MODEL', 'burger')
-    model_dir = f'turtlebot3_{tb3_model}'
-    remappings = [('/tf', 'tf'), ('/tf_static', 'tf_static')]
-    urdf_file_name = 'turtlebot3_' + tb3_model + '.urdf'
-    urdf_path = os.path.join(
-        tb3_multi_dir,
-        'urdf',
-        urdf_file_name)
-
-    with open(urdf_path, 'r') as infp:
-        robot_desc = infp.read()
-
-    for robot in robots:
-        namespace = robot['name']
-
-        sdf_path = os.path.join(tb3_multi_dir, 'models', model_dir, 'model.sdf')
-        patched_sdf = load_sdf_with_namespace(sdf_path, namespace)
-
-        robot_state_publisher = Node(
-            package='robot_state_publisher',
-            executable='robot_state_publisher',
-            name='robot_state_publisher',
-            namespace=namespace,
-            remappings=remappings,
-            output='screen',
-            parameters=[{
-                'use_sim_time': use_sim_time,
-                'robot_description': robot_desc,
-                # TF is isolated by the per-robot topic namespace, so frame
-                # IDs must remain unprefixed to match the Nav2 parameters.
-                'frame_prefix': '',
-            }])
-
-        spawner_node = Node(
-            package='ros_gz_sim',
-            executable='create',
-            namespace=namespace,
-            arguments=[
-                '-name', f'{namespace}_{tb3_model}',
-                '-string', patched_sdf,
-                '-x', str(robot['x_pose']),
-                '-y', str(robot['y_pose']),
-                '-z', '0.01',
-            ],
-            output='screen',
-        )
-
-        bridge_template = os.path.join(
-            tb3_multi_dir, 'params', f'{tb3_model}_bridge.yaml'
-        )
-        if namespace == 'tb1':
-            wheel_bridge = create_namespaced_bridge_yaml(
-                bridge_template, namespace, use_ground_truth_odom=False
-            )
-            truth_bridge = create_namespaced_bridge_yaml(
-                bridge_template, namespace, use_ground_truth_odom=True
-            )
-            bridge_nodes = [
-                Node(
-                    package='ros_gz_bridge',
-                    executable='parameter_bridge',
-                    name=f'{namespace}_bridge',
-                    arguments=[
-                        '--ros-args', '-p', f'config_file:={truth_bridge}'
-                    ],
-                    output='screen',
-                    condition=IfCondition(mapping_use_ground_truth_odom),
-                ),
-                Node(
-                    package='ros_gz_bridge',
-                    executable='parameter_bridge',
-                    name=f'{namespace}_bridge',
-                    arguments=[
-                        '--ros-args', '-p', f'config_file:={wheel_bridge}'
-                    ],
-                    output='screen',
-                    condition=UnlessCondition(mapping_use_ground_truth_odom),
-                ),
-            ]
-        else:
-            namespaced_bridge = create_namespaced_bridge_yaml(
-                bridge_template, namespace
-            )
-            bridge_nodes = [Node(
-                package='ros_gz_bridge',
-                executable='parameter_bridge',
-                name=f'{namespace}_bridge',
-                arguments=[
-                    '--ros-args', '-p', f'config_file:={namespaced_bridge}'
-                ],
-                output='screen',
-            )]
-
-        # Add image bridge if model has camera
-        image_bridge = None
-        if tb3_model != 'burger':
-            image_bridge = Node(
-                package='ros_gz_image',
-                executable='image_bridge',
-                namespace=namespace,
-                arguments=['/' + namespace + '/camera/image_raw'],
-                output='screen',
-            )
-
-        # Add robot-related nodes
-        ld.add_action(robot_state_publisher)
-        ld.add_action(spawner_node)
-        for bridge_node in bridge_nodes:
-            ld.add_action(bridge_node)
-        if image_bridge:
-            ld.add_action(image_bridge)
-
-    # A persistent monitor keeps Docker readiness accurate without repeatedly
-    # constructing short-lived ROS CLI nodes (and DDS discovery participants).
-    ld.add_action(Node(
-        package='tb3_multi_robot',
-        executable='simulation_health_monitor',
-        name='simulation_health_monitor',
-        output='screen',
-        respawn=True,
-        respawn_delay=1.0,
-        parameters=[{
-            'use_sim_time': False,
-            'robot_names': [robot['name'] for robot in robots],
-            'odom_timeout': 2.0,
-            'heartbeat_period': 0.5,
-            'ready_file': '/tmp/tb3_multi_robot.ready',
-        }],
+    ld.add_action(OpaqueFunction(
+        function=_robot_actions,
+        kwargs={'tb3_multi_dir': tb3_multi_dir},
     ))
 
     # In a multi-robot setup using Gazebo Sim (Harmonic or later), each robot typically

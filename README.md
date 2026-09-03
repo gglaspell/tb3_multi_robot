@@ -1,8 +1,8 @@
 # tb3_multi_robot — follow branch
 
-This branch runs a two-robot ROS 2 Jazzy / Gazebo Harmonic scenario. `tb1`
-builds a map with SLAM Toolbox, explores it with `auto_mapper`, and leads `tb3`,
-which receives dynamically generated trailing goals.
+This branch includes multi-robot ROS 2 Jazzy / Gazebo Harmonic demos. The
+follow scenario has `tb1` map and explore while leading `tb3`; the chase/tag
+scenario gives three robots independent Nav2 stacks on one shared map.
 
 ## Quick start with Docker
 
@@ -130,6 +130,52 @@ Regenerate those three paired world/map assets after editing their primitives:
 ```bash
 python3 tools/generate_test_worlds.py
 ```
+
+## Red/blue chase and tag
+
+The chase/tag scenario spawns `tb1` and `tb2` as red chasers and `tb3` as the
+blue runner. Each robot has an independent namespaced Nav2 stack, TF tree,
+localization instance, controller, and local costmap. All three stacks consume
+the same occupancy map on `/map`; the game coordinator shares team poses and
+starts namespaced `NavigateToPose` actions, then streams moving targets through
+Nav2's `GoalUpdater` without restarting the active controller.
+
+```bash
+ros2 launch tb3_multi_robot chase_tag.launch.py
+```
+
+Or run the same all-in-one scenario through the repository image:
+
+```bash
+docker compose -f docker/docker-compose.yaml --profile tag up --build chase-tag
+```
+
+The default `open_arena` gives the clearest first run. The same controller can
+exercise global planning in the other paired world/map scenarios:
+
+```bash
+ros2 launch tb3_multi_robot chase_tag.launch.py \
+  world:=obstacle_course gui:=false rviz:=false score_to_win:=5
+```
+
+Red predicts blue's motion and assigns opposite flanking intercepts. Blue
+selects bounded escape waypoints from the combined repulsion of both reds and
+the arena walls. Red is speed-limited to 0.22 m/s and blue to 0.16 m/s by the
+generated per-robot Nav2 profiles, making tags achievable. On a tag, all active
+goals are cancelled, blue receives a head start, and the next round begins.
+Set `score_to_win:=0` (the default) for unlimited rounds.
+
+Gazebo colors the teams from `config/chase_tag_robots.yaml`. Three RViz
+instances are optional because Gazebo already shows the complete game; enable
+them with `rviz:=true`. Observe the game without a GUI through:
+
+```bash
+ros2 topic echo /chase_tag/events
+ros2 topic echo /chase_tag/status
+```
+
+For navigation-only diagnostics against an already-running matching world,
+use `chase_tag_nav.launch.py`.
 
 ## Automatic mapping and leader control
 
